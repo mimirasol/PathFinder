@@ -1,0 +1,96 @@
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- MAP BACKGROUND -->
+    <com.google.android.gms.maps.MapView
+        android:id="@+id/mapView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- BOTTOM SHEET -->
+    <LinearLayout
+        android:id="@+id/bottomSheet"
+        android:layout_width="match_parent"
+        android:layout_height="500dp"
+        android:orientation="vertical"
+        android:background="@drawable/white_rounded_corners"
+        android:padding="16dp"
+        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+
+        <!-- Drag Handle -->
+        <View
+            android:id="@+id/blackline"
+            android:layout_width="350dp"
+            android:layout_height="7dp"
+            android:layout_gravity="center"
+            android:background="@drawable/black_rounded_corners"
+            android:layout_marginBottom="12dp"/>
+
+        <!-- Scrollable Content -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="@font/gabarito"
+                    android:text="Where would you like to go today?"
+                    android:textSize="35dp"
+                    android:layout_marginTop="10dp"/>
+
+                <EditText
+                    android:id="@+id/etDestination"
+                    android:layout_width="340dp"
+                    android:layout_height="60dp"
+                    android:fontFamily="@font/poppins"
+                    android:hint="Enter destination"
+                    android:textColor="@color/black"
+                    android:layout_marginTop="12dp"/>
+
+                <Button
+                    android:id="@+id/btnSearch"
+                    android:layout_width="340dp"
+                    android:layout_height="70dp"
+                    android:layout_marginTop="12dp"
+                    android:backgroundTint="@color/black"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="25dp"
+                    android:text="Start" />
+
+                <Button
+                    android:id="@+id/btnWhereAmI"
+                    android:layout_width="340dp"
+                    android:layout_height="70dp"
+                    android:text="Where Am I?"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="25dp"
+                    android:layout_marginTop="12dp"
+                    android:backgroundTint="#D9D9D9"/>
+
+                <Button
+                    android:id="@+id/btnSOS"
+                    android:layout_width="340dp"
+                    android:layout_height="70dp"
+                    android:text="SOS"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="25dp"
+                    android:layout_marginTop="12dp"
+                    android:backgroundTint="#BD0404"/>
+
+            </LinearLayout>
+        </ScrollView>
+
+    </LinearLayout>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
