@@ -8,7 +8,6 @@ import android.location.Location
 import android.os.Bundle
 import android.os.Looper
 import android.speech.tts.TextToSpeech
-import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.Toast
@@ -30,7 +29,6 @@ import org.json.JSONObject
 import java.net.URL
 import java.util.Locale
 import kotlin.concurrent.thread
-import androidx.core.graphics.drawable.DrawableCompat
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var mapView: MapView
