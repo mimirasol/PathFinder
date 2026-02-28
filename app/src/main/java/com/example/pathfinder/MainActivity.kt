@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val placesUrl =
                     "https://maps.googleapis.com/maps/api/place/nearbysearch/json?" +
                             "location=${current.latitude},${current.longitude}" +
-                            "&radius=40" +
+                            "&radius=50" +
                             "&type=point_of_interest" +
                             "&key=AIzaSyBVFzL3QYBsPplfc3vSddoGzv9zeeq0NzM"
 
@@ -148,7 +148,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                 dialog.show()
 
                                 // Combine all landmark names into a single string
-                                val toSpeak = landmarkNames.joinToString(separator = ", ")
+                                val toSpeak = landmarkNames.joinToString(separator = ", ", prefix = "You are within")
 
                                 // Speak the landmarks
                                 tts.speak(
@@ -157,6 +157,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                     null,
                                     "LANDMARKS_UTTERANCE"
                                 )
+
+                                dialog.setCanceledOnTouchOutside(true)
+                                dialog.setOnDismissListener {
+                                    tts.stop()
+                                }
                             }
                         } else {
                             runOnUiThread {
@@ -167,7 +172,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                 ).show()
                             }
                         }
-
                     } catch (e: Exception) {
                         e.printStackTrace()
                         runOnUiThread {
@@ -194,7 +198,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val behavior = BottomSheetBehavior.from(bottomSheet)
 
         behavior.peekHeight = 200
-        behavior.state = BottomSheetBehavior.STATE_COLLAPSED
+        behavior.state = BottomSheetBehavior.STATE_HALF_EXPANDED
     }
 
     // when the map is ready to be used, calls getMapAsync(this)
