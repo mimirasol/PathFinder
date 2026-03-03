@@ -1,0 +1,74 @@
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- MAP -->
+    <com.google.android.gms.maps.MapView
+        android:id="@+id/mapView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"/>
+
+    <!-- TOP DESTINATION BAR (MATCHES YOUR SEARCH BAR STYLE) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="55dp"
+        android:layout_margin="20dp"
+        android:background="@drawable/white_morerounded_corners"
+        android:elevation="40dp"
+        android:gravity="center_vertical"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp">
+
+        <TextView
+            android:id="@+id/txtNavDestination"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Walking to Destination"
+            android:textSize="16sp"
+            android:fontFamily="@font/poppins"
+            android:textColor="@color/black"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="200dp"
+        android:layout_gravity="bottom"
+        android:background="@drawable/white_rounded_corners"
+        android:elevation="10dp"
+        android:padding="20dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/txtDistance"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="350 m"
+            android:textSize="30sp"
+            android:fontFamily="@font/gabarito"
+            android:textColor="@color/black"/>
+
+        <TextView
+            android:id="@+id/txtTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="5 min walk"
+            android:textSize="16sp"
+            android:fontFamily="@font/poppins"
+            android:textColor="#757575"
+            android:layout_marginTop="4dp"/>
+
+        <!-- END BUTTON (Matches your blue Start button style) -->
+        <Button
+            android:id="@+id/btnEnd"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="16dp"
+            android:text="End Navigation"
+            android:textSize="18sp"
+            android:fontFamily="@font/poppins_bold"
+            android:backgroundTint="#0073e6"
+            android:textColor="@android:color/white"/>
+    </LinearLayout>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
