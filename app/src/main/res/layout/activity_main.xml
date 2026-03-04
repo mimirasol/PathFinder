@@ -17,7 +17,7 @@
         android:layout_width="match_parent"
         android:layout_height="420dp"
         android:orientation="vertical"
-        android:background="@drawable/white_rounded_corners"
+        android:background="@drawable/white_morerounded_corners"
         android:elevation="10dp"
         android:outlineProvider="background"
         android:translationZ="6dp"

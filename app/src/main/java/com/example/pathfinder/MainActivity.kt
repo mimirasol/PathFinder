@@ -291,23 +291,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         }
     }
+
     // ----------------- FUNCTIONS --------------------------
 
     private fun setupDestinationAutocomplete() {
-        // Listen for input changes
         txtDestination.doOnTextChanged { text, _, _, _ ->
             val query = text.toString()
             if (query.length < 3) return@doOnTextChanged
             fetchAutocomplete(query)
         }
 
-        // Handle dropdown selection
         txtDestination.setOnItemClickListener { parent, _, position, _ ->
             val selectedText = parent.getItemAtPosition(position) as String
             selectAutocomplete(selectedText)
         }
 
-        // Optional: press Enter selects first suggestion
         txtDestination.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
                 val firstSuggestion = txtDestination.adapter.getItem(0) as? String
