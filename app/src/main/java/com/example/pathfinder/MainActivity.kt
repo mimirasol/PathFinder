@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var tts: TextToSpeech
     private lateinit var placesClient: PlacesClient
     private lateinit var txtDestination: MaterialAutoCompleteTextView
+    private lateinit var graphHopperService: GraphHopperService
     private var destinationMarker: Marker? = null
 
     private var destinationLatLng: LatLng? = null
@@ -71,6 +72,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             insets
         }
 
+        graphHopperService = GraphHopperService(getString(R.string.graph_api_key))
+
+        // Map
         mapView = findViewById(R.id.mapView)
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync(this)
@@ -445,32 +449,31 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     // draws the line between current location and destination
     private fun drawRoute(origin: LatLng, destination: LatLng) {
-        val url =
-            "https://maps.googleapis.com/maps/api/directions/json?" +
-                    "origin=${origin.latitude},${origin.longitude}" +
-                    "&destination=${destination.latitude},${destination.longitude}" +
-                    "&mode=walking" +
-                    "&key=${getString(R.string.api_key)}"
-
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val json = URL(url).readText()
-                val jsonObj = JSONObject(json)
-                val routes = jsonObj.getJSONArray("routes")
-                if (routes.length() > 0) {
-                    val points = routes.getJSONObject(0)
-                        .getJSONObject("overview_polyline")
-                        .getString("points")
-                    val decodedPoints = decodePolyline(points)
+                val routePoints = graphHopperService.getRoute(
+                    origin.latitude, origin.longitude,
+                    destination.latitude, destination.longitude
+                )
+                if (routePoints.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
                         currentPolyline?.remove()
                         currentPolyline = googleMap.addPolyline(
-                            PolylineOptions().addAll(decodedPoints).color(Color.BLUE).width(10f)
+                            PolylineOptions().addAll(routePoints)
+                                .color(Color.BLUE)
+                                .width(10f)
                         )
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "Route not found", Toast.LENGTH_SHORT).show()
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "Error fetching route", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }

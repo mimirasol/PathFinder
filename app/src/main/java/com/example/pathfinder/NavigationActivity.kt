@@ -19,7 +19,6 @@ import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
 import java.util.Locale
-import kotlin.math.*
 
 class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
 
@@ -39,22 +38,67 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private var routeDrawn = false
     private var stepList: MutableList<NavigationStep> = mutableListOf()
     private var currentStepIndex = 0
-    private var lastSpokenStepIndex = -1
-    private val preTurnDistanceMeters = 20f
-    private val preTurnAlertGivenSteps = mutableSetOf<Int>()
 
+    // ── Phase tracking ───────────────────────────────────────────────────────
+    //
+    //  ANNOUNCE  → fires once when a step becomes active.
+    //              Uses live GPS distance so the number is always accurate.
+    //              Step 0 : "Starting navigation. Continue straight for 80 meters."
+    //              Step N : "Turn left now. Continue straight for 55 meters."
+    //              Final  : "Turn right now. Your destination is 30 meters ahead."
+    //
+    //  CRUISING  → silent. UI shows live countdown.
+    //              → PRE_TURN when distLeft ≤ PRE_TURN_DISTANCE
+    //
+    //  PRE_TURN  → speaks once: "Approaching a left turn in X meters."
+    //              → TURN_NOW when distLeft ≤ TURN_NOW_DISTANCE
+    //
+    //  TURN_NOW  → speaks once: "Turn left now."
+    //              → advances step when user passes the point (closest-approach logic)
+    //
+    private enum class Phase { ANNOUNCE, CRUISING, PRE_TURN, TURN_NOW }
+    private var phase = Phase.ANNOUNCE
+    private var announceSpoken = false
+
+    // Distance thresholds (metres). Generous to account for pedestrian GPS drift.
+    private val PRE_TURN_DISTANCE = 20
+    private val TURN_NOW_DISTANCE = 10
+
+    // Closest-approach tracker.
+    // GPS on foot is ±5-15 m, so "distLeft <= 15" may never happen even when
+    // the user is right at the turn. Instead we also watch for the user reaching
+    // their closest point to step.end and then moving away — that means they passed it.
+    private var closestDistSeen = Int.MAX_VALUE
+    private var distRisingTicks = 0
+    private val RISING_TICKS_NEEDED = 2   // 2 consecutive ticks moving away = passed the point
+
+    // ── Permission launcher ──────────────────────────────────────────────────
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        ) {
-            startLocationUpdates()
-        }
+    ) { perms ->
+        if (perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        ) startLocationUpdates()
     }
 
-    data class RouteData(val polylinePoints: List<LatLng>, val distanceText: String, val durationText: String)
-    data class NavigationStep(val start: LatLng, val end: LatLng, val instruction: String, val distanceText: String, val path: List<LatLng>)
+    // ── Data classes ─────────────────────────────────────────────────────────
+    data class RouteData(
+        val polylinePoints: List<LatLng>,
+        val distanceText: String,
+        val durationText: String
+    )
+
+    data class NavigationStep(
+        val start: LatLng,
+        val end: LatLng,
+        val instruction: String,
+        val distanceMeters: Int,
+        val path: List<LatLng>
+    )
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Lifecycle
+    // ════════════════════════════════════════════════════════════════════════
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,289 +123,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
 
         setupLocationClient()
         setupTextToSpeech()
-    }
-
-    private fun checkLocationPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            startLocationUpdates()
-        } else {
-            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-        }
-    }
-
-    private fun receiveDestination() {
-        val lat = intent.getDoubleExtra("dest_lat", 0.0)
-        val lng = intent.getDoubleExtra("dest_lng", 0.0)
-        if (lat != 0.0 && lng != 0.0) destination = LatLng(lat, lng)
-    }
-
-    override fun onMapReady(map: GoogleMap) {
-        googleMap = map
-        googleMap.uiSettings.isCompassEnabled = true
-        googleMap.mapType = GoogleMap.MAP_TYPE_NORMAL
-
-        destination?.let {
-            googleMap.addMarker(MarkerOptions().position(it).title("Destination"))
-            googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 17f))
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            googleMap.isMyLocationEnabled = true
-        }
-    }
-
-    private fun setupLocationClient() {
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val location = result.lastLocation ?: return
-                currentLocation = LatLng(location.latitude, location.longitude)
-
-                currentLocation?.let { loc ->
-                    googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 18f))
-                    if (!routeDrawn && destination != null) {
-                        fetchWalkingRoute(loc, destination!!)
-                        routeDrawn = true
-                    }
-                    if (currentStepIndex < stepList.size) checkStepProgress()
-                }
-            }
-        }
-    }
-
-    private fun calculateTurnType(prevStep: NavigationStep?, currentStep: NavigationStep): String {
-        if (prevStep == null) return "straight"
-
-        val prevEndPoints = prevStep.path.takeLast(2)
-        val currentStartPoints = currentStep.path.take(2)
-
-        if (prevEndPoints.size < 2 || currentStartPoints.size < 2) return "straight"
-
-        val startBearing = getBearing(prevEndPoints[0], prevEndPoints[1])
-        val endBearing = getBearing(currentStartPoints[0], currentStartPoints[1])
-        var angleDiff = (endBearing - startBearing + 360) % 360
-        if (angleDiff > 180) angleDiff -= 360 // normalize to -180..180
-
-        return when {
-            angleDiff in 10.0..45.0 -> "slight right"
-            angleDiff in 45.0..180.0 -> "right"
-            angleDiff in -45.0..-10.0 -> "slight left"
-            angleDiff in -180.0..-45.0 -> "left"
-            else -> "straight"
-        }
-    }
-
-    private fun getBearing(start: LatLng, end: LatLng): Double {
-        val lat1 = Math.toRadians(start.latitude)
-        val lon1 = Math.toRadians(start.longitude)
-        val lat2 = Math.toRadians(end.latitude)
-        val lon2 = Math.toRadians(end.longitude)
-        val y = sin(lon2 - lon1) * cos(lat2)
-        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1)
-        return (Math.toDegrees(atan2(y, x)) + 360) % 360
-    }
-
-    private fun checkStepProgress() {
-        if (currentStepIndex >= stepList.size || currentLocation == null) return
-
-        val step = stepList[currentStepIndex]
-        val results = FloatArray(1)
-        android.location.Location.distanceBetween(
-            currentLocation!!.latitude,
-            currentLocation!!.longitude,
-            step.end.latitude,
-            step.end.longitude,
-            results
-        )
-        val distanceMeters = results[0].toInt()
-        val isFinalStep = currentStepIndex == stepList.size - 1
-
-        // Determine turn direction
-        val prevStep = if (currentStepIndex > 0) stepList[currentStepIndex - 1] else null
-        val direction = calculateTurnType(prevStep, step)
-
-        // --- Pre-turn alert ---
-        if (!isFinalStep &&
-            distanceMeters in 9..preTurnDistanceMeters.toInt() &&
-            !preTurnAlertGivenSteps.contains(currentStepIndex)
-        ) {
-            val preAlert = "Approaching a $direction turn in $distanceMeters meters"
-            txtNavGuide.text = preAlert
-            speakInstruction(preAlert)
-            preTurnAlertGivenSteps.add(currentStepIndex)
-        }
-
-        // --- Main instruction at turn ---
-        if (distanceMeters <= 8) {
-            if (!isFinalStep) {
-                val instructionText = "${step.instruction} in $distanceMeters meters"
-                txtNavGuide.text = instructionText
-                speakInstruction(instructionText)
-            } else {
-                txtNavGuide.text = "You have arrived!"
-                speakInstruction("You have arrived at your destination")
-            }
-
-            // Move to next step
-            currentStepIndex++
-        }
-    }
-
-    private fun setupTextToSpeech() {
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) tts.language = Locale.US
-        }
-    }
-
-    private fun startLocationUpdates() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000L).build()
-        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
-    }
-
-    private fun stopLocationUpdates() {
-        if (::fusedLocationClient.isInitialized) fusedLocationClient.removeLocationUpdates(locationCallback)
-    }
-
-    private fun fetchWalkingRoute(origin: LatLng, dest: LatLng) {
-        val url = "https://maps.googleapis.com/maps/api/directions/json?" +
-                "origin=${origin.latitude},${origin.longitude}" +
-                "&destination=${dest.latitude},${dest.longitude}" +
-                "&mode=walking" +
-                "&avoid=ferries|highways" +
-                "&key=${getString(R.string.api_key)}"
-
-        val request = Request.Builder().url(url).build()
-
-        httpClient.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { e.printStackTrace() }
-            override fun onResponse(call: Call, response: Response) {
-                val bodyString = response.body?.string() ?: return
-                drawRouteFromJson(bodyString)
-            }
-        })
-    }
-
-    private fun drawRouteFromJson(jsonData: String) {
-        val json = JSONObject(jsonData)
-        val routes = json.getJSONArray("routes")
-        if (routes.length() == 0) return
-
-        val route = routes.getJSONObject(0)
-        val legs = route.getJSONArray("legs").getJSONObject(0)
-        val steps = legs.getJSONArray("steps")
-
-        stepList.clear()
-        val fullPath = mutableListOf<LatLng>()
-
-        for (i in 0 until steps.length()) {
-            val step = steps.getJSONObject(i)
-            val startLocation = step.getJSONObject("start_location")
-            val endLocation = step.getJSONObject("end_location")
-            val instruction = step.getString("html_instructions")
-            val distanceText = step.getJSONObject("distance").getString("text")
-            val polylinePoints = step.getJSONObject("polyline").getString("points")
-            val path = decodePolyline(polylinePoints)
-
-            stepList.add(
-                NavigationStep(
-                    start = LatLng(startLocation.getDouble("lat"), startLocation.getDouble("lng")),
-                    end = LatLng(endLocation.getDouble("lat"), endLocation.getDouble("lng")),
-                    instruction = android.text.Html.fromHtml(instruction, android.text.Html.FROM_HTML_MODE_LEGACY).toString(),
-                    distanceText = distanceText,
-                    path = path
-                )
-            )
-            fullPath.addAll(path)
-        }
-
-        val distanceText = legs.getJSONObject("distance").getString("text")
-        val durationText = legs.getJSONObject("duration").getString("text")
-        currentRoute = RouteData(fullPath, distanceText, durationText)
-        currentStepIndex = 0
-        lastSpokenStepIndex = -1
-
-        runOnUiThread {
-            drawRoute(currentRoute!!)
-            updateMapCamera(fullPath)
-            if (stepList.isNotEmpty()) speakNextStepInstruction(force = true)
-        }
-    }
-
-    private fun speakNextStepInstruction(force: Boolean = false) {
-        if (currentStepIndex >= stepList.size) return
-        if (!force && currentStepIndex == lastSpokenStepIndex) return
-
-        val step = stepList[currentStepIndex]
-        val distanceToEnd = FloatArray(1)
-        android.location.Location.distanceBetween(
-            currentLocation!!.latitude,
-            currentLocation!!.longitude,
-            step.end.latitude,
-            step.end.longitude,
-            distanceToEnd
-        )
-        val distanceMeters = distanceToEnd[0].toInt()
-        val instructionText = "${step.instruction} in $distanceMeters meters"
-        txtNavGuide.text = instructionText
-        speakInstruction(instructionText)
-        lastSpokenStepIndex = currentStepIndex
-    }
-
-    private fun speakInstruction(text: String) {
-        if (::tts.isInitialized) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-    }
-
-    private fun drawRoute(route: RouteData) {
-        routePolyline?.remove()
-        routePolyline = googleMap.addPolyline(
-            PolylineOptions().addAll(route.polylinePoints).width(14f).color(0xFF0073E6.toInt())
-        )
-        findViewById<android.widget.TextView>(R.id.txtDistance).text = route.distanceText
-        findViewById<android.widget.TextView>(R.id.txtTime).text = route.durationText
-        txtNavGuide.text = "Start walking"
-    }
-
-    private fun updateMapCamera(points: List<LatLng>) {
-        if (points.isEmpty()) return
-        val boundsBuilder = LatLngBounds.Builder()
-        points.forEach { boundsBuilder.include(it) }
-        googleMap.animateCamera(CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 150))
-    }
-
-    private fun decodePolyline(encoded: String): List<LatLng> {
-        val poly = ArrayList<LatLng>()
-        var index = 0
-        var lat = 0
-        var lng = 0
-        while (index < encoded.length) {
-            var b: Int
-            var shift: Int
-            var result: Int
-
-            shift = 0
-            result = 0
-            do {
-                b = encoded[index++].code - 63
-                result = result or (b and 0x1f shl shift)
-                shift += 5
-            } while (b >= 0x20)
-            val dlat = if (result and 1 != 0) (result shr 1).inv() else result shr 1
-            lat += dlat
-
-            shift = 0
-            result = 0
-            do {
-                b = encoded[index++].code - 63
-                result = result or (b and 0x1f shl shift)
-                shift += 5
-            } while (b >= 0x20)
-            val dlng = if (result and 1 != 0) (result shr 1).inv() else result shr 1
-            lng += dlng
-
-            poly.add(LatLng(lat / 1E5, lng / 1E5))
-        }
-        return poly
     }
 
     override fun onResume() {
@@ -390,5 +151,431 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         mapView.onSaveInstanceState(outState)
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Permissions + location
+    // ════════════════════════════════════════════════════════════════════════
+
+    private fun checkLocationPermission() {
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) startLocationUpdates()
+        else permissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
+    }
+
+    private fun startLocationUpdates() {
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L).build()
+        fusedLocationClient.requestLocationUpdates(req, locationCallback, Looper.getMainLooper())
+    }
+
+    private fun stopLocationUpdates() {
+        if (::fusedLocationClient.isInitialized)
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Setup
+    // ════════════════════════════════════════════════════════════════════════
+
+    private fun receiveDestination() {
+        val lat = intent.getDoubleExtra("dest_lat", 0.0)
+        val lng = intent.getDoubleExtra("dest_lng", 0.0)
+        if (lat != 0.0 && lng != 0.0) destination = LatLng(lat, lng)
+    }
+
+    override fun onMapReady(map: GoogleMap) {
+        googleMap = map
+        googleMap.uiSettings.isCompassEnabled = true
+        googleMap.mapType = GoogleMap.MAP_TYPE_NORMAL
+
+        destination?.let {
+            googleMap.addMarker(MarkerOptions().position(it).title("Destination"))
+            googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 17f))
+        }
+
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) googleMap.isMyLocationEnabled = true
+    }
+
+    private fun setupLocationClient() {
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                val location = result.lastLocation ?: return
+                currentLocation = LatLng(location.latitude, location.longitude)
+
+                currentLocation?.let { loc ->
+                    googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 18f))
+
+                    if (!routeDrawn && destination != null) {
+                        fetchWalkingRoute(loc, destination!!)
+                        routeDrawn = true
+                    }
+
+                    if (stepList.isNotEmpty()) checkStepProgress()
+                }
+            }
+        }
+    }
+
+    private fun setupTextToSpeech() {
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) tts.language = Locale.US
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Navigation logic
+    // ════════════════════════════════════════════════════════════════════════
+
+    private fun checkStepProgress() {
+        val loc = currentLocation ?: return
+        if (currentStepIndex >= stepList.size) return
+
+        val step     = stepList[currentStepIndex]
+        val distLeft = distanceTo(loc, step.end)
+        val isFinal  = currentStepIndex == stepList.size - 1
+
+        // ── Closest-approach tracking ──────────────────────────────────────
+        // Update how close we've ever been to this step's endpoint.
+        // Once we start moving away consistently, the user has passed the point.
+        if (distLeft < closestDistSeen) {
+            closestDistSeen = distLeft
+            distRisingTicks = 0
+        } else if (distLeft > closestDistSeen) {
+            distRisingTicks++
+        }
+
+        // Has the user passed the step endpoint? True when:
+        //  (a) they got within TURN_NOW_DISTANCE, OR
+        //  (b) they reached a closest point then moved away for RISING_TICKS_NEEDED ticks
+        //      AND they were at least somewhat close (within 2× TURN_NOW_DISTANCE)
+        val userPassedPoint = distLeft <= TURN_NOW_DISTANCE ||
+                (distRisingTicks >= RISING_TICKS_NEEDED && closestDistSeen <= TURN_NOW_DISTANCE * 2)
+
+        when (phase) {
+
+            // ── ANNOUNCE ──────────────────────────────────────────────────
+            Phase.ANNOUNCE -> {
+                if (!announceSpoken) {
+                    announceSpoken = true
+                    showAndSpeak(buildAnnouncement(currentStepIndex, distLeft, isFinal))
+                }
+                // Fall through into CRUISING immediately so short steps don't get skipped
+                phase = Phase.CRUISING
+                showDistanceLabel(step, distLeft, isFinal)
+                when {
+                    distLeft <= TURN_NOW_DISTANCE -> {
+                        phase = Phase.TURN_NOW
+                        showAndSpeak(if (isFinal) "You have arrived at your destination" else turnNowMessage(step.instruction))
+                    }
+                    distLeft <= PRE_TURN_DISTANCE -> {
+                        phase = Phase.PRE_TURN
+                        showAndSpeak(if (isFinal) "Your destination is in $distLeft meters" else buildApproachingMessage(step.instruction, distLeft))
+                    }
+                }
+            }
+
+            // ── CRUISING ──────────────────────────────────────────────────
+            Phase.CRUISING -> {
+                showDistanceLabel(step, distLeft, isFinal)
+                when {
+                    distLeft <= TURN_NOW_DISTANCE -> {
+                        phase = Phase.TURN_NOW
+                        showAndSpeak(if (isFinal) "You have arrived at your destination" else turnNowMessage(step.instruction))
+                    }
+                    distLeft <= PRE_TURN_DISTANCE -> {
+                        phase = Phase.PRE_TURN
+                        showAndSpeak(if (isFinal) "Your destination is in $distLeft meters" else buildApproachingMessage(step.instruction, distLeft))
+                    }
+                }
+            }
+
+            // ── PRE_TURN ──────────────────────────────────────────────────
+            Phase.PRE_TURN -> {
+                showDistanceLabel(step, distLeft, isFinal)
+                if (distLeft <= TURN_NOW_DISTANCE) {
+                    phase = Phase.TURN_NOW
+                    showAndSpeak(if (isFinal) "You have arrived at your destination" else turnNowMessage(step.instruction))
+                }
+            }
+
+            // ── TURN_NOW ──────────────────────────────────────────────────
+            // Advance once user has passed the point (either by distance or closest-approach).
+            Phase.TURN_NOW -> {
+                if (isFinal) return   // arrived message already spoken
+                if (userPassedPoint) advanceToNextStep()
+            }
+        }
+    }
+
+    /** Reset closest-approach state and move to next step. */
+    private fun advanceToNextStep() {
+        currentStepIndex++
+        phase           = Phase.ANNOUNCE
+        announceSpoken  = false
+        closestDistSeen = Int.MAX_VALUE
+        distRisingTicks = 0
+        if (currentStepIndex < stepList.size) checkStepProgress()
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Message builders
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Post-turn announcement for step [stepIndex].
+     * Uses live [distLeft] (GPS distance from current position to step end)
+     * so the quoted distance is always accurate even if the user is mid-step.
+     *
+     * Step 0 → "Starting navigation. Continue straight for 80 meters."
+     * Step N → "Turn left now. Continue straight for 55 meters."
+     * Final  → "Turn right now. Your destination is 30 meters ahead."
+     */
+    private fun buildAnnouncement(stepIndex: Int, distLeft: Int, isFinal: Boolean): String {
+        val current = stepList[stepIndex]
+
+        val ahead = when {
+            isFinal ->
+                "Your destination is $distLeft meters ahead."
+            isStraightInstruction(current.instruction) ->
+                // GraphHopper gave a straight/head/continue instruction — use it for direction context
+                // e.g. "Head northeast for 80 meters", "Continue straight for 55 meters"
+                "${current.instruction} for $distLeft meters."
+            else ->  // turn instruction — announce it later via PRE_TURN/TURN_NOW
+                // For all other steps: the user just turned and now needs to walk straight.
+                // The current step's instruction describes the NEXT turn (at the end of this
+                // step), which will be announced later via PRE_TURN / TURN_NOW.
+                "Continue straight for $distLeft meters."
+        }
+
+        return if (stepIndex == 0)
+            "Starting navigation. $ahead"
+        else {
+            val turnDone = turnNowMessage(stepList[stepIndex - 1].instruction)
+            "$turnDone. $ahead"
+        }
+    }
+
+    /** Display-only label while cruising. Shows direction if step is straight, else generic. */
+    private fun showDistanceLabel(step: NavigationStep, distLeft: Int, isFinal: Boolean) {
+        txtNavGuide.text = when {
+            isFinal -> "Destination — $distLeft m"
+            isStraightInstruction(step.instruction) -> "${step.instruction} — $distLeft m"
+            else -> "Continue straight — $distLeft m"
+        }
+    }
+
+    /**
+     * Returns true if the GraphHopper instruction is a straight/heading instruction
+     * rather than a turn. These are safe to speak as-is after a turn.
+     * e.g. "Head northeast", "Continue straight", "Head north on Main St"
+     */
+    private fun isStraightInstruction(instruction: String): Boolean {
+        val s = instruction.lowercase()
+        return s.contains("head") || s.contains("continue") || s.contains("straight")
+    }
+
+    /** "Continue straight", "Turn left", etc. — capitalised, for display and speech. */
+    private fun verboseAction(instruction: String): String {
+        val s = instruction.lowercase()
+        return when {
+            s.contains("arrive") || s.contains("destination") -> "Arriving at destination"
+            s.contains("slight left")  -> "Turn slight left"
+            s.contains("sharp left")   -> "Turn sharp left"
+            s.contains("left")         -> "Turn left"
+            s.contains("slight right") -> "Turn slight right"
+            s.contains("sharp right")  -> "Turn sharp right"
+            s.contains("right")        -> "Turn right"
+            s.contains("u-turn")       -> "Make a U-turn"
+            s.contains("straight") || s.contains("continue") || s.contains("head") -> "Continue straight"
+            else -> instruction.replaceFirstChar { it.uppercase() }
+        }
+    }
+
+    /** "Approaching a left turn in 13 meters" */
+    private fun buildApproachingMessage(instruction: String, distLeft: Int): String {
+        val s = instruction.lowercase()
+        val what = when {
+            s.contains("slight left")  -> "slight left turn"
+            s.contains("sharp left")   -> "sharp left turn"
+            s.contains("left")         -> "left turn"
+            s.contains("slight right") -> "slight right turn"
+            s.contains("sharp right")  -> "sharp right turn"
+            s.contains("right")        -> "right turn"
+            s.contains("u-turn")       -> "U-turn"
+            else                       -> "turn"
+        }
+        return "Approaching a $what in $distLeft meters"
+    }
+
+    /** "Turn left now" — also used in ANNOUNCE to confirm the previous step. */
+    private fun turnNowMessage(instruction: String): String {
+        val s = instruction.lowercase()
+        return when {
+            s.contains("slight left")  -> "Turn slight left now"
+            s.contains("sharp left")   -> "Turn sharp left now"
+            s.contains("left")         -> "Turn left now"
+            s.contains("slight right") -> "Turn slight right now"
+            s.contains("sharp right")  -> "Turn sharp right now"
+            s.contains("right")        -> "Turn right now"
+            s.contains("u-turn")       -> "Make a U-turn now"
+            else                       -> "Continue straight"
+        }
+    }
+
+    // ── UI + TTS ─────────────────────────────────────────────────────────────
+    private fun showAndSpeak(text: String) {
+        txtNavGuide.text = text
+        speakInstruction(text)
+    }
+
+    private fun speakInstruction(text: String) {
+        if (::tts.isInitialized) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+    }
+
+    private fun distanceTo(from: LatLng, to: LatLng): Int {
+        val r = FloatArray(1)
+        android.location.Location.distanceBetween(
+            from.latitude, from.longitude,
+            to.latitude, to.longitude, r
+        )
+        return r[0].toInt()
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Route fetching (GraphHopper)
+    // ════════════════════════════════════════════════════════════════════════
+
+    private fun fetchWalkingRoute(origin: LatLng, dest: LatLng) {
+        val url = "https://graphhopper.com/api/1/route?" +
+                "point=${origin.latitude},${origin.longitude}&" +
+                "point=${dest.latitude},${dest.longitude}&" +
+                "profile=foot&" +
+                "instructions=true&" +
+                "points_encoded=true&" +
+                "key=${getString(R.string.graph_api_key)}"
+
+        httpClient.newCall(Request.Builder().url(url).build()).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { e.printStackTrace() }
+
+            override fun onResponse(call: Call, response: Response) {
+                val body = response.body?.string() ?: return
+                try {
+                    val json  = JSONObject(body)
+                    val paths = json.getJSONArray("paths")
+                    if (paths.length() == 0) return
+
+                    val path          = paths.getJSONObject(0)
+                    val decodedPoints = decodePolyline(path.getString("points"))
+                    val instructions  = path.getJSONArray("instructions")
+
+                    stepList.clear()
+
+                    for (i in 0 until instructions.length()) {
+                        val inst     = instructions.getJSONObject(i)
+                        val interval = inst.getJSONArray("interval")
+                        val si       = interval.getInt(0)
+                        val ei       = interval.getInt(1)
+                        if (si >= decodedPoints.size || ei >= decodedPoints.size) continue
+
+                        stepList.add(
+                            NavigationStep(
+                                start          = decodedPoints[si],
+                                end            = decodedPoints[ei],
+                                instruction    = inst.getString("text"),
+                                distanceMeters = inst.getDouble("distance").toInt(),
+                                path           = decodedPoints.subList(si, ei + 1)
+                            )
+                        )
+                    }
+
+                    currentRoute = RouteData(
+                        decodedPoints,
+                        "${path.getDouble("distance").toInt()} m",
+                        "${path.getLong("time") / 60000} min"
+                    )
+
+                    // Reset all nav state
+                    currentStepIndex = 0
+                    phase            = Phase.ANNOUNCE
+                    announceSpoken   = false
+                    closestDistSeen  = Int.MAX_VALUE
+                    distRisingTicks  = 0
+
+                    runOnUiThread {
+                        drawRoute(currentRoute!!)
+                        updateMapCamera(decodedPoints)
+                        if (stepList.isNotEmpty()) checkStepProgress()
+                    }
+
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+        })
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Map drawing
+    // ════════════════════════════════════════════════════════════════════════
+
+    private fun drawRoute(route: RouteData) {
+        routePolyline?.remove()
+        routePolyline = googleMap.addPolyline(
+            PolylineOptions()
+                .addAll(route.polylinePoints)
+                .width(14f)
+                .color(0xFF0073E6.toInt())
+        )
+        findViewById<android.widget.TextView>(R.id.txtDistance).text = route.distanceText
+        findViewById<android.widget.TextView>(R.id.txtTime).text     = route.durationText
+        txtNavGuide.text = "Route found. Starting navigation."
+    }
+
+    private fun updateMapCamera(points: List<LatLng>) {
+        if (points.isEmpty()) return
+        val b = LatLngBounds.Builder().also { points.forEach(it::include) }
+        googleMap.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), 150))
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Polyline decoder
+    // ════════════════════════════════════════════════════════════════════════
+
+    private fun decodePolyline(encoded: String): List<LatLng> {
+        val poly = ArrayList<LatLng>()
+        var index = 0; var lat = 0; var lng = 0
+        while (index < encoded.length) {
+            var b: Int; var shift = 0; var result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or (b and 0x1f shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lat += if (result and 1 != 0) (result shr 1).inv() else result shr 1
+
+            shift = 0; result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or (b and 0x1f shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lng += if (result and 1 != 0) (result shr 1).inv() else result shr 1
+
+            poly.add(LatLng(lat / 1E5, lng / 1E5))
+        }
+        return poly
     }
 }
