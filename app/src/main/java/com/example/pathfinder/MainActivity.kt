@@ -38,6 +38,7 @@ import android.widget.LinearLayout
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.core.content.res.ResourcesCompat
 import androidx.lifecycle.lifecycleScope
 
@@ -104,48 +105,104 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val btnWhereAmI = findViewById<Button>(R.id.btnWhereAmI)
 
         btnWhereAmI.setOnClickListener {
+
             currentLocation?.let { current ->
-                // 1. Center camera immediately (Main Thread)
+
+                // Center camera
                 googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(current, 17f))
 
-                // 2. Update the "You" marker
+                // Update "You" marker
                 youMarker?.remove()
-                youMarker = googleMap.addMarker(MarkerOptions().position(current).title("You"))
+                youMarker = googleMap.addMarker(
+                    MarkerOptions().position(current).title("You")
+                )
 
-                // 3. Move Network Work to Background Thread
                 lifecycleScope.launch(Dispatchers.IO) {
-                    val placesUrl =
-                        "https://maps.googleapis.com/maps/api/place/nearbysearch/json?" +
-                                "location=${current.latitude},${current.longitude}" +
-                                "&radius=50" +
-                                "&type=point_of_interest" +
-                                "&key=${getString(R.string.api_key)}"
 
+                    var streetName = "your current location"
+
+                    // ----------------------------
+                    // REVERSE GEOCODING (Street)
+                    // ----------------------------
                     try {
+
+                        val geoUrl =
+                            "https://maps.googleapis.com/maps/api/geocode/json?" +
+                                    "latlng=${current.latitude},${current.longitude}" +
+                                    "&key=${getString(R.string.api_key)}"
+
+                        val geoJson = URL(geoUrl).readText()
+                        val geoObj = JSONObject(geoJson)
+                        val results = geoObj.getJSONArray("results")
+
+                        if (results.length() > 0) {
+
+                            val components =
+                                results.getJSONObject(0)
+                                    .getJSONArray("address_components")
+
+                            for (i in 0 until components.length()) {
+
+                                val comp = components.getJSONObject(i)
+                                val types = comp.getJSONArray("types")
+
+                                for (j in 0 until types.length()) {
+
+                                    if (types.getString(j) == "route") {
+                                        streetName = comp.getString("long_name")
+                                        break
+                                    }
+                                }
+                            }
+                        }
+
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // ----------------------------
+                    // NEARBY LANDMARKS
+                    // ----------------------------
+                    try {
+
+                        val placesUrl =
+                            "https://maps.googleapis.com/maps/api/place/nearbysearch/json?" +
+                                    "location=${current.latitude},${current.longitude}" +
+                                    "&radius=50" +
+                                    "&type=point_of_interest" +
+                                    "&key=${getString(R.string.api_key)}"
+
                         val json = URL(placesUrl).readText()
                         val jsonObj = JSONObject(json)
                         val results = jsonObj.getJSONArray("results")
+
                         val landmarkNames = ArrayList<String>()
 
-                        // Limit loop to avoid index out of bounds if fewer than 5 results exist
-                        val count = if (results.length() < 5) results.length() else 5
+                        val count = minOf(results.length(), 5)
 
                         for (i in 0 until count) {
+
                             val place = results.getJSONObject(i)
                             val name = place.getString("name")
+
                             val geometry = place.getJSONObject("geometry")
                             val loc = geometry.getJSONObject("location")
+
                             val lat = loc.getDouble("lat")
                             val lng = loc.getDouble("lng")
 
                             val resultsArray = FloatArray(1)
+
                             Location.distanceBetween(
                                 current.latitude, current.longitude,
                                 lat, lng,
                                 resultsArray
                             )
+
                             val distanceMeters = resultsArray[0].toInt()
+
                             withContext(Dispatchers.Main) {
+
                                 googleMap.addMarker(
                                     MarkerOptions()
                                         .position(LatLng(lat, lng))
@@ -157,11 +214,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                         )
                                 )
                             }
+
                             landmarkNames.add("$distanceMeters m - $name")
                         }
 
+                        // ----------------------------
+                        // SHOW DIALOG
+                        // ----------------------------
                         withContext(Dispatchers.Main) {
+
                             if (landmarkNames.isNotEmpty()) {
+
                                 val adapter = object : ArrayAdapter<String>(
                                     this@MainActivity,
                                     android.R.layout.simple_list_item_1,
@@ -172,16 +235,23 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                         convertView: View?,
                                         parent: ViewGroup
                                     ): View {
-                                        val view =
-                                            super.getView(position, convertView, parent) as TextView
+
+                                        val view = super.getView(
+                                            position,
+                                            convertView,
+                                            parent
+                                        ) as TextView
+
                                         view.typeface = ResourcesCompat.getFont(
                                             this@MainActivity,
                                             R.font.poppins
                                         )
+
                                         view.textSize = 18f
                                         view.gravity = Gravity.CENTER
                                         view.textAlignment = View.TEXT_ALIGNMENT_CENTER
                                         view.setTextColor(Color.BLACK)
+
                                         return view
                                     }
                                 }
@@ -190,7 +260,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                     com.google.android.material.dialog.MaterialAlertDialogBuilder(
                                         this@MainActivity
                                     )
-                                        .setTitle("You are within")
+                                        .setTitle("You are on $streetName")
                                         .setAdapter(adapter, null)
                                         .setPositiveButton("Close", null)
                                         .setBackground(
@@ -203,16 +273,22 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                                 dialog.show()
 
-                                val textViewId = dialog.context.resources.getIdentifier(
-                                    "alertTitle",
-                                    "id",
-                                    "android"
-                                )
+                                // ----------------------------
+                                // TITLE STYLE
+                                // ----------------------------
+                                val textViewId =
+                                    dialog.context.resources.getIdentifier(
+                                        "alertTitle",
+                                        "id",
+                                        "android"
+                                    )
+
                                 val titleTextView =
-                                    dialog.findViewById<android.widget.TextView>(textViewId)
+                                    dialog.findViewById<TextView>(textViewId)
 
                                 titleTextView?.apply {
-                                    val font = ResourcesCompat.getFont(
+
+                                    typeface = ResourcesCompat.getFont(
                                         this@MainActivity,
                                         R.font.poppins_extrabold
                                     )
@@ -220,39 +296,38 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                     setTextColor(Color.BLACK)
                                     textSize = 30f
 
-                                    (this.parent as? android.view.View)?.let { parentView ->
-                                        if (parentView is android.widget.LinearLayout) {
+                                    (parent as? View)?.let { parentView ->
+                                        if (parentView is LinearLayout) {
                                             parentView.gravity = Gravity.CENTER
                                         }
                                     }
                                 }
 
-                                dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+                                // ----------------------------
+                                // BUTTON STYLE
+                                // ----------------------------
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                                     .apply {
-                                        val parentPanel = this.parent as? android.view.ViewGroup
-                                        if (parentPanel is android.widget.LinearLayout) {
-                                            parentPanel.gravity = Gravity.CENTER
-                                            for (i in 0 until parentPanel.childCount) {
-                                                val child = parentPanel.getChildAt(i)
-                                                if (child is android.widget.Space) child.visibility =
-                                                    View.GONE
-                                            }
-                                        }
 
-                                        this.typeface = ResourcesCompat.getFont(
+                                        typeface = ResourcesCompat.getFont(
                                             this@MainActivity,
                                             R.font.poppins_bold
                                         )
-                                        this.setTextColor(Color.parseColor("#9b8bf4"))
-                                        this.textSize = 16f
+
+                                        setTextColor(Color.parseColor("#9b8bf4"))
+                                        textSize = 16f
                                     }
 
                                 dialog.window?.setElevation(30f)
 
+                                // ----------------------------
+                                // SPEAK
+                                // ----------------------------
                                 val toSpeak = landmarkNames.joinToString(
                                     separator = ", ",
-                                    prefix = "You are within"
+                                    prefix = "You are on $streetName. Nearby landmarks are "
                                 )
+
                                 tts.speak(
                                     toSpeak,
                                     TextToSpeech.QUEUE_FLUSH,
@@ -261,7 +336,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                                 )
 
                                 dialog.setOnDismissListener { tts.stop() }
+
                             } else {
+
                                 Toast.makeText(
                                     this@MainActivity,
                                     "No landmarks found nearby",
@@ -271,8 +348,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         }
 
                     } catch (e: Exception) {
+
                         e.printStackTrace()
+
                         withContext(Dispatchers.Main) {
+
                             Toast.makeText(
                                 this@MainActivity,
                                 "Error fetching landmarks",

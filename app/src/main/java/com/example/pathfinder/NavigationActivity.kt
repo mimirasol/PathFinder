@@ -2,22 +2,40 @@ package com.example.pathfinder
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.location.Location
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.*
 import com.google.android.gms.maps.*
 import com.google.android.gms.maps.model.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
+import java.net.URL
+import java.util.ArrayList
 import java.util.Locale
 
 class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
@@ -38,6 +56,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private var routeDrawn = false
     private var stepList: MutableList<NavigationStep> = mutableListOf()
     private var currentStepIndex = 0
+    private var youMarker: Marker? = null
 
     // ── Phase tracking ───────────────────────────────────────────────────────
     //
@@ -123,7 +142,270 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
 
         setupLocationClient()
         setupTextToSpeech()
+
+        val btnWhereAmI = findViewById<Button>(R.id.btnWhereAmI)
+
+        btnWhereAmI.setOnClickListener {
+
+            currentLocation?.let { current ->
+
+                // Center camera
+                googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(current, 17f))
+
+                // Update "You" marker
+                youMarker?.remove()
+                youMarker = googleMap.addMarker(
+                    MarkerOptions().position(current).title("You")
+                )
+
+                lifecycleScope.launch(Dispatchers.IO) {
+
+                    var streetName = "your current location"
+
+                    // ----------------------------
+                    // REVERSE GEOCODING (Street)
+                    // ----------------------------
+                    try {
+
+                        val geoUrl =
+                            "https://maps.googleapis.com/maps/api/geocode/json?" +
+                                    "latlng=${current.latitude},${current.longitude}" +
+                                    "&key=${getString(R.string.api_key)}"
+
+                        val geoJson = URL(geoUrl).readText()
+                        val geoObj = JSONObject(geoJson)
+                        val results = geoObj.getJSONArray("results")
+
+                        if (results.length() > 0) {
+
+                            val components =
+                                results.getJSONObject(0)
+                                    .getJSONArray("address_components")
+
+                            for (i in 0 until components.length()) {
+
+                                val comp = components.getJSONObject(i)
+                                val types = comp.getJSONArray("types")
+
+                                for (j in 0 until types.length()) {
+
+                                    if (types.getString(j) == "route") {
+                                        streetName = comp.getString("long_name")
+                                        break
+                                    }
+                                }
+                            }
+                        }
+
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // ----------------------------
+                    // NEARBY LANDMARKS
+                    // ----------------------------
+                    try {
+
+                        val placesUrl =
+                            "https://maps.googleapis.com/maps/api/place/nearbysearch/json?" +
+                                    "location=${current.latitude},${current.longitude}" +
+                                    "&radius=50" +
+                                    "&type=point_of_interest" +
+                                    "&key=${getString(R.string.api_key)}"
+
+                        val json = URL(placesUrl).readText()
+                        val jsonObj = JSONObject(json)
+                        val results = jsonObj.getJSONArray("results")
+
+                        val landmarkNames = ArrayList<String>()
+
+                        val count = minOf(results.length(), 5)
+
+                        for (i in 0 until count) {
+
+                            val place = results.getJSONObject(i)
+                            val name = place.getString("name")
+
+                            val geometry = place.getJSONObject("geometry")
+                            val loc = geometry.getJSONObject("location")
+
+                            val lat = loc.getDouble("lat")
+                            val lng = loc.getDouble("lng")
+
+                            val resultsArray = FloatArray(1)
+
+                            Location.distanceBetween(
+                                current.latitude, current.longitude,
+                                lat, lng,
+                                resultsArray
+                            )
+
+                            val distanceMeters = resultsArray[0].toInt()
+
+                            withContext(Dispatchers.Main) {
+
+                                googleMap.addMarker(
+                                    MarkerOptions()
+                                        .position(LatLng(lat, lng))
+                                        .title(name)
+                                        .icon(
+                                            BitmapDescriptorFactory.defaultMarker(
+                                                BitmapDescriptorFactory.HUE_AZURE
+                                            )
+                                        )
+                                )
+                            }
+
+                            landmarkNames.add("$distanceMeters m - $name")
+                        }
+
+                        // ----------------------------
+                        // SHOW DIALOG
+                        // ----------------------------
+                        withContext(Dispatchers.Main) {
+
+                            if (landmarkNames.isNotEmpty()) {
+
+                                val adapter = object : ArrayAdapter<String>(
+                                    this@NavigationActivity,
+                                    android.R.layout.simple_list_item_1,
+                                    landmarkNames
+                                ) {
+                                    override fun getView(
+                                        position: Int,
+                                        convertView: View?,
+                                        parent: ViewGroup
+                                    ): View {
+
+                                        val view = super.getView(
+                                            position,
+                                            convertView,
+                                            parent
+                                        ) as TextView
+
+                                        view.typeface = ResourcesCompat.getFont(
+                                            this@NavigationActivity,
+                                            R.font.poppins
+                                        )
+
+                                        view.textSize = 18f
+                                        view.gravity = Gravity.CENTER
+                                        view.textAlignment = View.TEXT_ALIGNMENT_CENTER
+                                        view.setTextColor(Color.BLACK)
+
+                                        return view
+                                    }
+                                }
+
+                                val dialog =
+                                    com.google.android.material.dialog.MaterialAlertDialogBuilder(
+                                        this@NavigationActivity
+                                    )
+                                        .setTitle("You are on $streetName")
+                                        .setAdapter(adapter, null)
+                                        .setPositiveButton("Close", null)
+                                        .setBackground(
+                                            ContextCompat.getDrawable(
+                                                this@NavigationActivity,
+                                                R.drawable.white_morerounded_corners
+                                            )
+                                        )
+                                        .create()
+
+                                dialog.show()
+
+                                // ----------------------------
+                                // TITLE STYLE
+                                // ----------------------------
+                                val textViewId =
+                                    dialog.context.resources.getIdentifier(
+                                        "alertTitle",
+                                        "id",
+                                        "android"
+                                    )
+
+                                val titleTextView =
+                                    dialog.findViewById<TextView>(textViewId)
+
+                                titleTextView?.apply {
+
+                                    typeface = ResourcesCompat.getFont(
+                                        this@NavigationActivity,
+                                        R.font.poppins_extrabold
+                                    )
+
+                                    setTextColor(Color.BLACK)
+                                    textSize = 30f
+
+                                    (parent as? View)?.let { parentView ->
+                                        if (parentView is LinearLayout) {
+                                            parentView.gravity = Gravity.CENTER
+                                        }
+                                    }
+                                }
+
+                                // ----------------------------
+                                // BUTTON STYLE
+                                // ----------------------------
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                                    .apply {
+
+                                        typeface = ResourcesCompat.getFont(
+                                            this@NavigationActivity,
+                                            R.font.poppins_bold
+                                        )
+
+                                        setTextColor(Color.parseColor("#9b8bf4"))
+                                        textSize = 16f
+                                    }
+
+                                dialog.window?.setElevation(30f)
+
+                                // ----------------------------
+                                // SPEAK
+                                // ----------------------------
+                                val toSpeak = landmarkNames.joinToString(
+                                    separator = ", ",
+                                    prefix = "You are on $streetName. Nearby landmarks are "
+                                )
+
+                                tts.speak(
+                                    toSpeak,
+                                    TextToSpeech.QUEUE_FLUSH,
+                                    null,
+                                    "LANDMARKS_UTTERANCE"
+                                )
+
+                                dialog.setOnDismissListener { tts.stop() }
+
+                            } else {
+
+                                Toast.makeText(
+                                    this@NavigationActivity,
+                                    "No landmarks found nearby",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+
+                    } catch (e: Exception) {
+
+                        e.printStackTrace()
+
+                        withContext(Dispatchers.Main) {
+
+                            Toast.makeText(
+                                this@NavigationActivity,
+                                "Error fetching landmarks",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+            }
+        }
     }
+
 
     override fun onResume() {
         super.onResume()
