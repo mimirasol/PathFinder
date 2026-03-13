@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+
+    <!-- Shadow — slightly stronger -->
+    <path
+        android:fillColor="#55000000"
+        android:pathData="M24,44 L8,38 L24,4 L40,38 Z"
+        android:translateX="1.5"
+        android:translateY="2.5" />
+
+    <!-- Arrow body — deep navy, clearly distinct from the #0073E6 route line -->
+    <path
+        android:fillColor="#0D47A1"
+        android:pathData="M24,44 L8,38 L24,4 L40,38 Z" />
+
+    <!-- Inner highlight — slightly lighter navy for depth -->
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M24,10 L24,40 L12,36 Z" />
+
+    <!-- Thick white outline so it pops on both light and dark map backgrounds -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3"
+        android:pathData="M24,44 L8,38 L24,4 L40,38 Z" />
+
+</vector>
