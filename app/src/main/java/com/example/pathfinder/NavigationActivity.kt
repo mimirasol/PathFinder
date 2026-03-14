@@ -49,27 +49,26 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private var routeDrawn = false
     private var stepList: MutableList<GraphHopperStep> = mutableListOf()
     private var currentStepIndex = 0
-    private var youMarker: Marker? = null
     private var navArrowMarker: Marker? = null
+    private var youMarker: Marker? = null
 
-    // The current instruction shown in the guidebox.
-    // The live distance counter is appended to this every GPS tick.
-    // When TTS speaks, it also sets this so both always match.
+    // What the guidebox is currently showing (without the distance suffix)
     private var currentGuideText = ""
 
-    // Spoken-once flags, reset every time we enter a new step
+    // Spoken-once flags per step
     private var spokenEntry    = false
     private var spokenApproach = false
     private var spokenAtPoint  = false
 
-    private val APPROACH_DISTANCE = 20  // meters
-    private val AT_POINT_DISTANCE = 8   // meters
+    // Distance thresholds
+    private val APPROACH_DISTANCE = 20  // meters — "Approaching a turn in X meters"
+    private val AT_POINT_DISTANCE = 8   // meters — "Turn right onto Rizal Avenue" + advance
 
     // Rerouting
-    private var isRerouting = false
-    private var lastRerouteTime = 0L
-    private val REROUTE_COOLDOWN_MS = 15_000L  // wait 15s between reroute attempts
-    private val REROUTE_THRESHOLD_M  = 50f      // meters off the route line before rerouting
+    private var isRerouting      = false
+    private var lastRerouteTime  = 0L
+    private val REROUTE_COOLDOWN = 15_000L
+    private val REROUTE_THRESHOLD = 50f  // meters off route
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -184,12 +183,8 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    override fun onResume() {
-        super.onResume(); mapView.onResume(); checkLocationPermission()
-    }
-    override fun onPause() {
-        super.onPause(); mapView.onPause(); stopLocationUpdates()
-    }
+    override fun onResume() { super.onResume(); mapView.onResume(); checkLocationPermission() }
+    override fun onPause()  { super.onPause();  mapView.onPause();  stopLocationUpdates() }
     override fun onDestroy() {
         mapView.onDestroy()
         if (::tts.isInitialized) tts.shutdown()
@@ -251,7 +246,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 this, Manifest.permission.ACCESS_FINE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
         ) {
-            // Disable the built-in blue dot — we use our own rotating arrow marker
             googleMap.isMyLocationEnabled = false
             googleMap.uiSettings.isMyLocationButtonEnabled = false
         }
@@ -264,35 +258,24 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 val location = result.lastLocation ?: return
                 currentLocation = LatLng(location.latitude, location.longitude)
                 currentLocation?.let { loc ->
-                    // Build a Google Maps / Waze style nav camera:
-                    // - tilt 60° for the 3D perspective
-                    // - bearing from the GPS fix so the map rotates with the user
-                    // - isMyLocationEnabled (set in onMapReady) draws the built-in
-                    //   blue chevron arrow — no custom marker needed
-                    val bearing = if (result.lastLocation!!.hasBearing())
-                        result.lastLocation!!.bearing else 0f
+                    val bearing = if (location.hasBearing()) location.bearing else 0f
 
-                    // 3D nav camera — tilted and rotated to direction of travel
                     val camPosition = CameraPosition.Builder()
                         .target(loc)
                         .zoom(19f)
                         .tilt(60f)
                         .bearing(bearing)
                         .build()
-                    googleMap.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(camPosition)
-                    )
+                    googleMap.animateCamera(CameraUpdateFactory.newCameraPosition(camPosition))
 
-                    // Custom arrow marker — update position and rotate to bearing
-                    // If marker exists just move it, else create it
                     if (navArrowMarker == null) {
                         navArrowMarker = googleMap.addMarker(
                             MarkerOptions()
                                 .position(loc)
                                 .icon(vectorToBitmapDescriptor(R.drawable.nav_arrow))
                                 .rotation(bearing)
-                                .anchor(0.5f, 0.5f)  // center the arrow on the position
-                                .flat(true)           // flat=true makes it rotate with the map
+                                .anchor(0.5f, 0.5f)
+                                .flat(true)
                                 .zIndex(1f)
                         )
                     } else {
@@ -334,6 +317,12 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 stepList.addAll(route.steps)
                 isRerouting = false
 
+                // TEMPORARY DEBUG — remove after confirming steps are correct
+                for ((i, s) in route.steps.withIndex()) {
+                    android.util.Log.d("NAV_STEPS",
+                        "Step $i | sign=${s.sign} | dist=${s.distanceMeters}m | text=${s.text}")
+                }
+
                 routePolyline?.remove()
                 routePolyline = googleMap.addPolyline(
                     PolylineOptions()
@@ -345,18 +334,9 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 findViewById<TextView>(R.id.txtDistance).text = "${route.distanceMeters} m"
                 findViewById<TextView>(R.id.txtTime).text     = "${route.durationMs / 60000} min"
 
-                // Go straight to the nav camera — skip the route overview animation.
-                // The overview caused a visible delay (zoom out → zoom back in) before
-                // the 3D nav view appeared. The polyline is still drawn on the map
-                // so the user can see the full route when they look around.
                 currentLocation?.let { loc ->
-                    val bearing = 0f  // will be corrected on the next GPS tick
                     val camPosition = CameraPosition.Builder()
-                        .target(loc)
-                        .zoom(19f)
-                        .tilt(60f)
-                        .bearing(bearing)
-                        .build()
+                        .target(loc).zoom(19f).tilt(60f).bearing(0f).build()
                     googleMap.moveCamera(CameraUpdateFactory.newCameraPosition(camPosition))
                 }
 
@@ -366,6 +346,18 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     // ═════════ Step entry ════════════════════════════════════════════════
+    /**
+     * Called once when entering a new step.
+     * GraphHopper's step.text already says exactly what to do, e.g.:
+     *   "Head north on Session Road"
+     *   "Turn right onto Rizal Avenue"
+     *   "Continue straight"
+     *   "Arrive at destination"
+     *
+     * Entry cue just says "Continue straight for X meters" so the user
+     * knows how far to walk before anything happens.
+     * The actual turn instruction fires later in the approach/at-point cues.
+     */
     private fun enterStep(index: Int) {
         if (index >= stepList.size) return
 
@@ -375,65 +367,78 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         spokenAtPoint    = false
 
         val step    = stepList[index]
-        val isFinal = isArrival(step.sign) || index == stepList.size - 1
+        val isFinal = index == stepList.size - 1
 
-        // Build the entry cue — this is what BOTH the TTS and guidebox will show
         val entryCue = when {
             index == 0 ->
+                // First step: GraphHopper gives the heading, e.g. "Head north on Session Road"
                 "${step.text} for ${step.distanceMeters} meters."
             isFinal ->
-                "Continue straight for ${step.distanceMeters} meters. Your destination is ahead."
-            else -> {
-                val street = extractStreet(step.text)
-                if (street != null)
-                    "Continue straight on $street for ${step.distanceMeters} meters."
-                else
-                    "Continue straight for ${step.distanceMeters} meters."
-            }
+                "Continue for ${step.distanceMeters} meters. Your destination is ahead."
+            else ->
+                // Middle steps: just tell them to keep walking.
+                // Don't mention the turn yet — approach cue handles that.
+                "Continue straight for ${step.distanceMeters} meters."
         }
 
-        // Both TTS and guidebox show the exact same text
         sayAndShow(entryCue)
         spokenEntry = true
     }
 
-    // ═════════ Core navigation tick ═══════════════════════════════════════
+    // ═════════ Navigation tick ════════════════════════════════════════════
+    /**
+     * Called on every GPS update.
+     *
+     * distToEnd = live GPS distance to the END POINT of the current step.
+     * That end point is exactly where the turn/maneuver happens.
+     *
+     * Cues:
+     *   Entry    → spoken once on step entry (how far to walk)
+     *   Approach → spoken at ~20m (warning: turn coming)
+     *   AtPoint  → spoken at ~8m  (the actual GraphHopper instruction)
+     *              then advances to the next step
+     */
     private fun checkStepProgress() {
         val loc = currentLocation ?: return
         if (currentStepIndex >= stepList.size) return
 
         val step      = stepList[currentStepIndex]
         val distToEnd = distanceTo(loc, step.endPoint)
-        val isFinal   = isArrival(step.sign) || currentStepIndex == stepList.size - 1
+        val isFinal   = currentStepIndex == stepList.size - 1
 
-        // ── Off-route check via GraphHopper map matching ────────────────
+        // Off-route check
         val now = System.currentTimeMillis()
-        if (!isRerouting && (now - lastRerouteTime) > REROUTE_COOLDOWN_MS) {
+        if (!isRerouting && (now - lastRerouteTime) > REROUTE_COOLDOWN) {
             checkIfOffRoute(loc)
         }
 
-        // Always update the distance counter on the guidebox.
-        // The instruction text (currentGuideText) stays whatever was last spoken,
-        // so the user can always read what they just heard.
+        // Live distance label — always shows current guide text + distance
         txtNavGuide.text = "$currentGuideText — $distToEnd m"
 
-        // ── Approach cue (~20 m out) ──────────────────────────────────────
+        // ── Approach cue: ~20m before the end point ─────────────────────
+        // The NEXT step's text is the maneuver at the end of the current leg.
+        // e.g. current step = "Continue onto Kamuning Road"
+        //      next step    = "Turn right onto 11th Jamboree Street"  ← this is what to say
         if (!spokenApproach && distToEnd <= APPROACH_DISTANCE) {
             spokenApproach = true
-            val cue = if (isFinal)
-                "Your destination is in $distToEnd meters."
-            else
-                "Approaching ${signToApproachPhrase(step.sign)} in $distToEnd meters."
+            val nextStep = stepList.getOrNull(currentStepIndex + 1)
+            val cue = when {
+                isFinal      -> "Your destination is in $distToEnd meters."
+                nextStep == null -> "Your destination is in $distToEnd meters."
+                else         -> "In $distToEnd meters, ${nextStep.text.lowercase()}."
+            }
             sayAndShow(cue)
         }
 
-        // ── At-point cue (~8 m out) — full instruction then advance ──────
+        // ── At-point cue: ~8m — say the maneuver, then advance ───────────
         if (!spokenAtPoint && distToEnd <= AT_POINT_DISTANCE) {
             spokenAtPoint = true
-            val cue = if (isFinal)
-                "You have arrived at your destination."
-            else
-                "${step.text}."
+            val nextStep = stepList.getOrNull(currentStepIndex + 1)
+            val cue = when {
+                isFinal          -> "You have arrived at your destination."
+                nextStep == null -> "You have arrived at your destination."
+                else             -> "${nextStep.text}."
+            }
             sayAndShow(cue)
 
             if (!isFinal) {
@@ -442,47 +447,56 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    // ═════════ Core helper — always keeps TTS and guidebox in sync ═══════
-    /**
-     * Every spoken instruction goes through here.
-     * Sets currentGuideText so the live distance ticker always appends
-     * to whatever was last spoken — TTS and guidebox always match.
-     */
+    // ═════════ Sync helper ════════════════════════════════════════════════
     private fun sayAndShow(text: String) {
-        // Strip trailing period for the guidebox so it looks cleaner on screen
         currentGuideText = text.trimEnd('.')
         txtNavGuide.text = currentGuideText
         if (::tts.isInitialized)
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
     }
 
-    // ═════════ Sign helper ════════════════════════════════════════════════
-    private fun signToApproachPhrase(sign: Int) = when (sign) {
-        -3 -> "a sharp left turn"
-        -2 -> "a left turn"
-        -1 -> "a slight left turn"
-        0 -> "a straight path"
-        1 -> "a slight right turn"
-        2 -> "a right turn"
-        3 -> "a sharp right turn"
-        6 -> "a roundabout"
-        7 -> "a keep left"
-        8 -> "a keep right"
-        else -> "a turn"
+    // ═════════ Off-route ══════════════════════════════════════════════════
+    private fun checkIfOffRoute(loc: LatLng) {
+        var minDist = Float.MAX_VALUE
+
+        for (step in stepList) {
+            val path = step.path
+            if (path.size < 2) continue
+            for (i in 0 until path.size - 1) {
+                val a = path[i]; val b = path[i + 1]
+                val abLat = b.latitude  - a.latitude
+                val abLng = b.longitude - a.longitude
+                val apLat = loc.latitude  - a.latitude
+                val apLng = loc.longitude - a.longitude
+                val abLenSq = abLat * abLat + abLng * abLng
+                val t = if (abLenSq == 0.0) 0.0
+                else ((apLat * abLat + apLng * abLng) / abLenSq).coerceIn(0.0, 1.0)
+                val dist = FloatArray(1)
+                Location.distanceBetween(
+                    loc.latitude, loc.longitude,
+                    a.latitude + t * abLat, a.longitude + t * abLng,
+                    dist
+                )
+                if (dist[0] < minDist) minDist = dist[0]
+            }
+        }
+
+        if (minDist > REROUTE_THRESHOLD) triggerReroute(loc)
+    }
+
+    private fun triggerReroute(loc: LatLng) {
+        if (isRerouting) return
+        isRerouting    = true
+        lastRerouteTime = System.currentTimeMillis()
+        sayAndShow("Off route. Recalculating.")
+        destination?.let { fetchRoute(loc, it) }
     }
 
     // ═════════ Helpers ════════════════════════════════════════════════════
-    private fun isArrival(sign: Int) = sign == 4
-
-    /**
-     * Converts a vector drawable to a BitmapDescriptor for use as a map marker.
-     * BitmapDescriptorFactory.fromResource() only works with PNGs — not vectors.
-     */
     private fun vectorToBitmapDescriptor(drawableResId: Int): BitmapDescriptor {
         val drawable = ContextCompat.getDrawable(this, drawableResId)!!
-        val bitmap = android.graphics.Bitmap.createBitmap(
-            drawable.intrinsicWidth,
-            drawable.intrinsicHeight,
+        val bitmap   = android.graphics.Bitmap.createBitmap(
+            drawable.intrinsicWidth, drawable.intrinsicHeight,
             android.graphics.Bitmap.Config.ARGB_8888
         )
         val canvas = android.graphics.Canvas(bitmap)
@@ -491,85 +505,15 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    /**
-     * Checks if the user is off route by measuring their perpendicular distance
-     * to each segment of the FULL route (all steps combined), then taking the minimum.
-     *
-     * We check all steps — not just the current one — because the user might have
-     * skipped ahead or be near a parallel segment of the route.
-     *
-     * For each segment A→B:
-     *   t = dot(AP, AB) / |AB|²  clamped to [0,1]
-     *   closest point = A + t * AB
-     *   dist = real meters from user to that closest point
-     *
-     * If the minimum distance across all segments exceeds REROUTE_THRESHOLD_M, reroute.
-     */
-    private fun checkIfOffRoute(loc: LatLng) {
-        var minDist = Float.MAX_VALUE
-
-        for (step in stepList) {
-            val path = step.path
-            if (path.size < 2) continue
-
-            for (i in 0 until path.size - 1) {
-                val a = path[i]
-                val b = path[i + 1]
-
-                val abLat = b.latitude  - a.latitude
-                val abLng = b.longitude - a.longitude
-                val apLat = loc.latitude  - a.latitude
-                val apLng = loc.longitude - a.longitude
-
-                val abLenSq = abLat * abLat + abLng * abLng
-                val t = if (abLenSq == 0.0) 0.0
-                else ((apLat * abLat + apLng * abLng) / abLenSq).coerceIn(0.0, 1.0)
-
-                val closestLat = a.latitude  + t * abLat
-                val closestLng = a.longitude + t * abLng
-
-                val dist = FloatArray(1)
-                Location.distanceBetween(
-                    loc.latitude, loc.longitude,
-                    closestLat, closestLng,
-                    dist
-                )
-
-                if (dist[0] < minDist) minDist = dist[0]
-            }
-        }
-
-        if (minDist > REROUTE_THRESHOLD_M) triggerReroute(loc)
-    }
-
-    private fun triggerReroute(loc: LatLng) {
-        if (isRerouting) return
-        isRerouting     = true
-        lastRerouteTime = System.currentTimeMillis()
-        sayAndShow("Off route. Recalculating.")
-        destination?.let { fetchRoute(loc, it) }
-    }
-
-    private fun extractStreet(text: String): String? {
-        val lower = text.lowercase()
-        val ontoIdx   = lower.indexOf(" onto ")
-        if (ontoIdx   != -1) return text.substring(ontoIdx   + 6).trim()
-        val onIdx     = lower.indexOf(" on ")
-        if (onIdx     != -1) return text.substring(onIdx     + 4).trim()
-        val towardIdx = lower.indexOf(" toward ")
-        if (towardIdx != -1) return text.substring(towardIdx + 8).trim()
-        return null
+    private fun distanceTo(from: LatLng, to: LatLng): Int {
+        val r = FloatArray(1)
+        Location.distanceBetween(from.latitude, from.longitude, to.latitude, to.longitude, r)
+        return r[0].toInt()
     }
 
     private fun speakInstruction(text: String) {
         if (::tts.isInitialized)
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
-    }
-
-    private fun distanceTo(from: LatLng, to: LatLng): Int {
-        val r = FloatArray(1)
-        Location.distanceBetween(from.latitude, from.longitude, to.latitude, to.longitude, r)
-        return r[0].toInt()
     }
 
     // ═════════ Landmarks dialog ═══════════════════════════════════════════
