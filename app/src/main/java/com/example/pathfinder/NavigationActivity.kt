@@ -31,6 +31,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URL
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import java.util.*
 
 class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
@@ -51,6 +54,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private var currentStepIndex = 0
     private var navArrowMarker: Marker? = null
     private var youMarker: Marker? = null
+    private lateinit var vibrator: Vibrator
 
     // What the guidebox is currently showing (without the distance suffix)
     private var currentGuideText = ""
@@ -96,6 +100,15 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         txtNavGuide = findViewById(R.id.txtNavGuide)
 
         graphHopper = GraphHopperService(getString(R.string.graph_api_key))
+
+        // Vibrator setup — VibratorManager is preferred on API 31+
+        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vm = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vm.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(VIBRATOR_SERVICE) as Vibrator
+        }
 
         findViewById<Button>(R.id.btnEnd).setOnClickListener { finish() }
         setupLocationClient()
@@ -428,6 +441,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 else         -> "In $distToEnd meters, ${nextStep.text.lowercase()}."
             }
             sayAndShow(cue)
+            vibrateApproach()
         }
 
         // ── At-point cue: ~8m — say the maneuver, then advance ───────────
@@ -440,6 +454,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 else             -> "${nextStep.text}."
             }
             sayAndShow(cue)
+            vibrateAtPoint()
 
             if (!isFinal) {
                 txtNavGuide.postDelayed({ enterStep(currentStepIndex + 1) }, 2500L)
@@ -503,6 +518,33 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         drawable.setBounds(0, 0, canvas.width, canvas.height)
         drawable.draw(canvas)
         return BitmapDescriptorFactory.fromBitmap(bitmap)
+    }
+
+    /**
+     * Vibration patterns:
+     *   Approach (~20m) — single short pulse: lets the user know a turn is coming
+     *   At point (~8m)  — double pulse: stronger cue to act now
+     */
+    private fun vibrateApproach() {
+        android.util.Log.d("NAV_VIBRATE", "vibrateApproach triggered")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(200L, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(200L)
+        }
+    }
+
+    private fun vibrateAtPoint() {
+        android.util.Log.d("NAV_VIBRATE", "vibrateAtPoint triggered")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val pattern = longArrayOf(0, 250, 150, 250)
+            vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        } else {
+            @Suppress("DEPRECATION")
+            val pattern = longArrayOf(0, 250, 150, 250)
+            vibrator.vibrate(pattern, -1)
+        }
     }
 
     private fun distanceTo(from: LatLng, to: LatLng): Int {
