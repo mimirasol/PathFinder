@@ -22,6 +22,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.*
 import com.google.android.gms.maps.*
@@ -111,6 +113,20 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         }
 
         findViewById<Button>(R.id.btnEnd).setOnClickListener { finish() }
+
+        // Apply bottom inset so the bottom bar clears the navigation bar
+        // (back / home / recents buttons on phones without gesture nav)
+        val bottomBar = findViewById<android.widget.LinearLayout>(R.id.bottomBar)
+        ViewCompat.setOnApplyWindowInsetsListener(bottomBar) { view, insets ->
+            val navBar = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            view.setPadding(
+                view.paddingLeft,
+                view.paddingTop,
+                view.paddingRight,
+                navBar.bottom + 16.dpToPx()
+            )
+            insets
+        }
         setupLocationClient()
         setupTextToSpeech()
 
@@ -428,11 +444,11 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         // Live distance label — always shows current guide text + distance
         txtNavGuide.text = "$currentGuideText — $distToEnd m"
 
-        // ── Approach cue: ~20m before the end point ─────────────────────
-        // The NEXT step's text is the maneuver at the end of the current leg.
-        // e.g. current step = "Continue onto Kamuning Road"
-        //      next step    = "Turn right onto 11th Jamboree Street"  ← this is what to say
-        if (!spokenApproach && distToEnd <= APPROACH_DISTANCE) {
+        // ── Approach cue: between 20m and 8m before the end point ──────
+        // Guard: only fire if we're NOT already within AT_POINT_DISTANCE,
+        // otherwise a short step would skip straight to at-point and the
+        // approach flag reset on enterStep() would re-fire it immediately.
+        if (!spokenApproach && distToEnd <= APPROACH_DISTANCE && distToEnd > AT_POINT_DISTANCE) {
             spokenApproach = true
             val nextStep = stepList.getOrNull(currentStepIndex + 1)
             val cue = when {
@@ -546,6 +562,9 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
             vibrator.vibrate(pattern, -1)
         }
     }
+
+    private fun Int.dpToPx(): Int =
+        (this * resources.displayMetrics.density).toInt()
 
     private fun distanceTo(from: LatLng, to: LatLng): Int {
         val r = FloatArray(1)

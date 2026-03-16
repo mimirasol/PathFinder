@@ -15,14 +15,16 @@
     <LinearLayout
         android:id="@+id/bottomSheet"
         android:layout_width="match_parent"
-        android:layout_height="420dp"
+        android:layout_height="wrap_content"
         android:orientation="vertical"
         android:background="@drawable/white_morerounded_corners"
         android:elevation="10dp"
         android:outlineProvider="background"
         android:translationZ="6dp"
         android:padding="16dp"
-        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+        app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior"
+        app:behavior_peekHeight="220dp"
+        app:behavior_hideable="false">
 
         <!-- Drag Handle -->
         <View
@@ -93,24 +95,41 @@
 
     </LinearLayout>
 
-    <!-- SEARCH BAR -->
-    <com.google.android.material.textfield.MaterialAutoCompleteTextView
-        android:id="@+id/txtDestination"
+    <!-- SEARCH BAR CONTAINER -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="55dp"
         android:layout_margin="20dp"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp"
-        android:hint="Enter destination"
-        android:textColorHint="#757575"
-        android:inputType="text"
-        android:fontFamily="@font/poppins"
-        android:textColor="@color/black"
-        android:background="@drawable/white_morerounded_corners"
-    android:elevation="40dp"
-    android:outlineProvider="background"
-    android:dropDownVerticalOffset="10dp"
-    android:popupBackground="@drawable/white_rounded_corners" />
+        android:elevation="40dp"
+        android:outlineProvider="background">
 
+        <com.google.android.material.textfield.MaterialAutoCompleteTextView
+            android:id="@+id/txtDestination"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:paddingStart="24dp"
+            android:paddingEnd="56dp"
+            android:hint="Enter destination"
+            android:textColorHint="#757575"
+            android:inputType="text"
+            android:fontFamily="@font/poppins"
+            android:textColor="@color/black"
+            android:background="@drawable/white_morerounded_corners"
+            android:dropDownVerticalOffset="10dp"
+            android:popupBackground="@drawable/white_rounded_corners" />
+
+        <!-- Clear (X) button -->
+        <ImageButton
+            android:id="@+id/btnClearSearch"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_close"
+            android:contentDescription="Clear search"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

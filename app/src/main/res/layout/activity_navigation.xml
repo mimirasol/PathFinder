@@ -35,9 +35,11 @@
 
     </LinearLayout>
 
+    <!-- BOTTOM BAR — id added so we can apply insets in code -->
     <LinearLayout
+        android:id="@+id/bottomBar"
         android:layout_width="match_parent"
-        android:layout_height="200dp"
+        android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:background="@drawable/white_rounded_corners"
         android:elevation="10dp"

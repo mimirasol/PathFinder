@@ -91,6 +91,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         txtDestination = findViewById(R.id.txtDestination)
         setupDestinationAutocomplete()
 
+        // Show/hide X button based on whether there is text
+        val btnClearSearch = findViewById<android.widget.ImageButton>(R.id.btnClearSearch)
+        txtDestination.doOnTextChanged { text, _, _, _ ->
+            btnClearSearch.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+        }
+        btnClearSearch.setOnClickListener {
+            txtDestination.text?.clear()
+            destinationLatLng = null
+            destinationMarker?.remove()
+            destinationMarker = null
+            currentPolyline?.remove()
+            currentPolyline = null
+        }
+
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts.language = Locale.US
@@ -100,9 +114,23 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val bottomSheet = findViewById<LinearLayout>(R.id.bottomSheet)
         BottomSheetBehavior.from(bottomSheet).apply {
-            state = BottomSheetBehavior.STATE_EXPANDED
-            isDraggable = false
-            skipCollapsed = true
+            state           = BottomSheetBehavior.STATE_COLLAPSED
+            isDraggable     = true
+            isFitToContents = true
+            isHideable      = false
+        }
+
+        // Apply bottom inset so the sheet content isn't hidden behind
+        // the navigation bar (back/home/recents buttons)
+        ViewCompat.setOnApplyWindowInsetsListener(bottomSheet) { view, insets ->
+            val navBar = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            view.setPadding(
+                view.paddingLeft,
+                view.paddingTop,
+                view.paddingRight,
+                navBar.bottom + resources.getDimensionPixelSize(R.dimen.bottom_sheet_padding)
+            )
+            insets
         }
 
         // ─── Where Am I ───────────────────────────────────────────────────
@@ -191,6 +219,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         }
 
+        // ─── SOS ──────────────────────────────────────────────────────────
+        findViewById<Button>(R.id.btnSOS).setOnClickListener {
+            startActivity(Intent(this, SosActivity::class.java))
+        }
+
         // ─── Start Navigation ─────────────────────────────────────────────
         findViewById<Button>(R.id.btnStart).setOnClickListener {
             val dest = destinationLatLng ?: run {
@@ -259,6 +292,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         val latLng = place.location ?: return@addOnSuccessListener
 
                         destinationLatLng = latLng
+
+                        // Remove old polyline before drawing new one
+                        currentPolyline?.remove()
+                        currentPolyline = null
 
                         // Update destination marker
                         destinationMarker?.remove()
