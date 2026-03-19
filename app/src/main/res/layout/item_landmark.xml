@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingVertical="12dp"
+    android:paddingHorizontal="4dp">
+
+    <!-- Distance badge -->
+    <TextView
+        android:id="@+id/txtLandmarkDistance"
+        android:layout_width="72dp"
+        android:layout_height="wrap_content"
+        android:fontFamily="@font/poppins_bold"
+        android:textSize="13sp"
+        android:textColor="#0073E6"
+        android:gravity="center"
+        android:background="@drawable/distance_badge"
+        android:paddingVertical="4dp"
+        android:layout_marginEnd="14dp"
+        android:text="50 m" />
+
+    <!-- Landmark name -->
+    <TextView
+        android:id="@+id/txtLandmarkName"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:fontFamily="@font/poppins"
+        android:textSize="16sp"
+        android:textColor="#1A202C"
+        android:text="Landmark name" />
+
+</LinearLayout>

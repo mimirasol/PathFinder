@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/loginRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="#F4F6FB">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:paddingTop="56dp"
+        android:paddingBottom="40dp"
+        android:paddingHorizontal="24dp">
+
+        <!-- ── Hero section ─────────────────────────────────── -->
+        <ImageView
+            android:layout_width="88dp"
+            android:layout_height="88dp"
+            android:src="@drawable/logo"
+            android:scaleType="fitCenter"
+            android:layout_marginBottom="14dp"
+            android:contentDescription="Pathfinder logo" />
+
+        <ImageView
+            android:layout_width="180dp"
+            android:layout_height="wrap_content"
+            android:src="@drawable/pathfindertext"
+            android:scaleType="fitCenter"
+            android:adjustViewBounds="true"
+            android:layout_marginBottom="6dp"
+            android:contentDescription="Pathfinder" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Your accessible navigation companion"
+            android:fontFamily="@font/poppins"
+            android:textSize="13sp"
+            android:textColor="#8A94A6"
+            android:layout_marginBottom="36dp"
+            android:letterSpacing="0.02" />
+
+        <!-- ── Login / Signup card ───────────────────────────── -->
+        <androidx.cardview.widget.CardView
+            android:id="@+id/loginCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="0dp"
+            app:cardBackgroundColor="#FFFFFF"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:id="@+id/layoutLoginForm"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="28dp">
+
+                <!-- Name label + field (signup only) -->
+                <TextView
+                    android:id="@+id/txtNameLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Name"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="12sp"
+                    android:textColor="#4A5568"
+                    android:letterSpacing="0.08"
+                    android:layout_marginBottom="6dp"
+                    android:visibility="gone" />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/tilName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="18dp"
+                    android:visibility="gone"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.FilledBox.Dense"
+                    app:hintEnabled="false"
+                    app:boxBackgroundColor="#F4F6FB"
+                    app:boxCornerRadiusTopStart="12dp"
+                    app:boxCornerRadiusTopEnd="12dp"
+                    app:boxCornerRadiusBottomStart="12dp"
+                    app:boxCornerRadiusBottomEnd="12dp"
+                    app:boxStrokeColor="@android:color/transparent"
+                    app:hintTextColor="#8A94A6">
+
+                    <EditText
+                        android:id="@+id/etName"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+
+                        android:fontFamily="@font/poppins"
+                        android:textSize="15sp"
+                        android:textColor="#1A202C"
+                        android:inputType="textPersonName"
+                        android:imeOptions="actionNext"
+                        android:paddingTop="14dp"
+                        android:paddingBottom="14dp" />
+
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Email label -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="EMAIL"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="11sp"
+                    android:textColor="#4A5568"
+                    android:letterSpacing="0.10"
+                    android:layout_marginBottom="6dp" />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="18dp"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.FilledBox.Dense"
+                    app:hintEnabled="false"
+                    app:boxBackgroundColor="#F4F6FB"
+                    app:boxCornerRadiusTopStart="12dp"
+                    app:boxCornerRadiusTopEnd="12dp"
+                    app:boxCornerRadiusBottomStart="12dp"
+                    app:boxCornerRadiusBottomEnd="12dp"
+                    app:boxStrokeColor="@android:color/transparent"
+                    app:hintTextColor="#8A94A6">
+
+                    <EditText
+                        android:id="@+id/etEmail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+
+                        android:fontFamily="@font/poppins"
+                        android:textSize="15sp"
+                        android:textColor="#1A202C"
+                        android:inputType="textEmailAddress"
+                        android:imeOptions="actionNext"
+                        android:paddingTop="14dp"
+                        android:paddingBottom="14dp" />
+
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Password label -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="PASSWORD"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="11sp"
+                    android:textColor="#4A5568"
+                    android:letterSpacing="0.10"
+                    android:layout_marginBottom="6dp" />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="28dp"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.FilledBox.Dense"
+                    app:hintEnabled="false"
+                    app:boxBackgroundColor="#F4F6FB"
+                    app:boxCornerRadiusTopStart="12dp"
+                    app:boxCornerRadiusTopEnd="12dp"
+                    app:boxCornerRadiusBottomStart="12dp"
+                    app:boxCornerRadiusBottomEnd="12dp"
+                    app:boxStrokeColor="@android:color/transparent"
+                    app:hintTextColor="#8A94A6"
+                    app:passwordToggleEnabled="true">
+
+                    <EditText
+                        android:id="@+id/etPassword"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+
+                        android:fontFamily="@font/poppins"
+                        android:textSize="15sp"
+                        android:textColor="#1A202C"
+                        android:inputType="textPassword"
+                        android:imeOptions="actionDone"
+                        android:paddingTop="14dp"
+                        android:paddingBottom="14dp" />
+
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Login button -->
+                <Button
+                    android:id="@+id/btnLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="54dp"
+                    android:text="Log In"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="15sp"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#0073E6"
+                    app:cornerRadius="14dp"
+                    android:layout_marginBottom="12dp"
+                    android:stateListAnimator="@null" />
+
+                <!-- Signup button -->
+                <Button
+                    android:id="@+id/btnSignup"
+                    android:layout_width="match_parent"
+                    android:layout_height="54dp"
+                    android:text="Create Account"
+                    android:fontFamily="@font/poppins_bold"
+                    android:textSize="15sp"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#0073E6"
+                    app:cornerRadius="14dp"
+                    android:visibility="gone"
+                    android:layout_marginBottom="12dp"
+                    android:stateListAnimator="@null" />
+
+                <!-- Progress -->
+                <ProgressBar
+                    android:id="@+id/progressBar"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone" />
+
+            </LinearLayout>
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- Toggle link — outside the card, looks cleaner -->
+        <TextView
+            android:id="@+id/txtToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Don't have an account? Sign up"
+            android:fontFamily="@font/poppins"
+            android:textSize="14sp"
+            android:textColor="#0073E6"
+            android:padding="8dp"
+            android:layout_marginBottom="32dp" />
+
+        <!-- ── ROLE SELECTION card ───────────────────────────── -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="0dp"
+            app:cardBackgroundColor="#FFFFFF">
+
+            <LinearLayout
+                android:id="@+id/roleSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:padding="28dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/txtRoleTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="How will you use Pathfinder?"
+                    android:fontFamily="@font/gabarito"
+                    android:textSize="22sp"
+                    android:textColor="#1A202C"
+                    android:gravity="center"
+                    android:layout_marginBottom="6dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="You can change this later from settings."
+                    android:fontFamily="@font/poppins"
+                    android:textSize="12sp"
+                    android:textColor="#8A94A6"
+                    android:gravity="center"
+                    android:layout_marginBottom="32dp" />
+
+                <!-- Navigator card button -->
+                <LinearLayout
+                    android:id="@+id/btnRoleNavigator"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/role_card_blue"
+                    android:padding="20dp"
+                    android:layout_marginBottom="14dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🧭  Navigator"
+                        android:fontFamily="@font/poppins_bold"
+                        android:textSize="18sp"
+                        android:textColor="#FFFFFF"
+                        android:layout_marginBottom="4dp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="I want to navigate and find my way"
+                        android:fontFamily="@font/poppins"
+                        android:textSize="13sp"
+                        android:textColor="#C8DEFF" />
+
+                </LinearLayout>
+
+                <!-- Guardian card button -->
+                <LinearLayout
+                    android:id="@+id/btnRoleGuardian"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/role_card_purple"
+                    android:padding="20dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🛡️  Guardian"
+                        android:fontFamily="@font/poppins_bold"
+                        android:textSize="18sp"
+                        android:textColor="#FFFFFF"
+                        android:layout_marginBottom="4dp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="I want to watch over someone's journey"
+                        android:fontFamily="@font/poppins"
+                        android:textSize="13sp"
+                        android:textColor="#DDD6FE" />
+
+                </LinearLayout>
+
+            </LinearLayout>
+
+        </androidx.cardview.widget.CardView>
+
+    </LinearLayout>
+
+</ScrollView>

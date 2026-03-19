@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/companionRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FFFFFF">
+
+    <!-- Toolbar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:padding="16dp">
+
+        <ImageButton
+            android:id="@+id/btnBack"
+            android:layout_width="55dp"
+            android:layout_height="55dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_back"
+            android:contentDescription="Back" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Companion"
+            android:fontFamily="@font/gabarito"
+            android:textSize="24sp"
+            android:textColor="#1A1A1A"
+            android:layout_marginStart="8dp" />
+
+        <ImageButton
+            android:id="@+id/btnLogout"
+            android:layout_width="55dp"
+            android:layout_height="55dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_logout"
+            android:contentDescription="Logout" />
+
+    </LinearLayout>
+
+    <!-- Circle code label -->
+    <TextView
+        android:id="@+id/txtCircleCode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Circle code: ------"
+        android:fontFamily="@font/poppins_bold"
+        android:textSize="16sp"
+        android:textColor="#0073E6"
+        android:gravity="center"
+        android:paddingBottom="8dp"
+        android:visibility="gone" />
+
+    <!-- No circle state -->
+    <LinearLayout
+        android:id="@+id/txtNoCircle"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="32dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="You're not in a circle yet."
+            android:fontFamily="@font/poppins"
+            android:textSize="18sp"
+            android:textColor="#888888"
+            android:gravity="center"
+            android:layout_marginBottom="32dp" />
+
+        <Button
+            android:id="@+id/btnCreateCircle"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Create a Circle"
+            android:fontFamily="@font/poppins_bold"
+            android:textSize="16sp"
+            android:backgroundTint="#0073E6"
+            android:textColor="#FFFFFF"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/btnJoinCircle"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Join a Circle"
+            android:fontFamily="@font/poppins_bold"
+            android:textSize="16sp"
+            android:textColor="#0073E6"
+            app:strokeColor="#0073E6"
+            app:strokeWidth="2dp"
+            app:backgroundTint="@android:color/transparent" />
+
+    </LinearLayout>
+
+    <!-- Circle active state: map + list -->
+    <LinearLayout
+        android:id="@+id/mapContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <!-- Map -->
+        <com.google.android.gms.maps.MapView
+            android:id="@+id/companionMapView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- Companion list -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvCompanions"
+            android:layout_width="match_parent"
+            android:layout_height="160dp"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="8dp"
+            android:clipToPadding="false"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+    <!-- Bottom buttons (always visible) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center">
+
+        <Button
+            android:id="@+id/btnShareCode"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:text="Share Code"
+            android:fontFamily="@font/poppins_bold"
+            android:textSize="14sp"
+            android:textColor="#0073E6"
+            app:strokeColor="#0073E6"
+            app:strokeWidth="2dp"
+            app:backgroundTint="@android:color/transparent"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnLeaveCircle"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:text="Leave Circle"
+            android:fontFamily="@font/poppins_bold"
+            android:textSize="14sp"
+            android:backgroundTint="#BD0404"
+            android:textColor="#FFFFFF"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+</LinearLayout>
