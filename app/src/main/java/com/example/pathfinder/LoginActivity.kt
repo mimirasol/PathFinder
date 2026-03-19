@@ -10,6 +10,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.cardview.widget.CardView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.firebase.auth.FirebaseAuth
@@ -20,7 +21,9 @@ class LoginActivity : AppCompatActivity() {
     private lateinit var auth: FirebaseAuth
 
     private val db by lazy {
-        FirebaseDatabase.getInstance("https://pathfinder-bdc3e-default-rtdb.asia-southeast1.firebasedatabase.app").reference
+        FirebaseDatabase.getInstance(
+            "https://pathfinder-bdc3e-default-rtdb.asia-southeast1.firebasedatabase.app"
+        ).reference
     }
 
     private lateinit var etName: EditText
@@ -31,10 +34,11 @@ class LoginActivity : AppCompatActivity() {
     private lateinit var txtToggle: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var txtNameLabel: TextView
+    private lateinit var loginCard: CardView
 
     private lateinit var roleSection: LinearLayout
-    private lateinit var btnRoleNavigator: android.widget.LinearLayout
-    private lateinit var btnRoleGuardian: android.widget.LinearLayout
+    private lateinit var btnRoleNavigator: LinearLayout
+    private lateinit var btnRoleGuardian: LinearLayout
     private lateinit var txtRoleTitle: TextView
 
     private var isLoginMode = true
@@ -46,11 +50,10 @@ class LoginActivity : AppCompatActivity() {
 
         auth = FirebaseAuth.getInstance()
 
-        if (auth.currentUser != null) {
-            redirectByRole(auth.currentUser!!.uid)
-            return
-        }
-
+        // Initialize ALL views first — before any Firebase calls —
+        // so showRoleSelection() always has valid references regardless
+        // of which code path triggers it
+        loginCard        = findViewById(R.id.loginCard)
         etName           = findViewById(R.id.etName)
         etEmail          = findViewById(R.id.etEmail)
         etPassword       = findViewById(R.id.etPassword)
@@ -70,17 +73,23 @@ class LoginActivity : AppCompatActivity() {
             insets
         }
 
-        updateUiMode()
-
+        // Set up click listeners
         btnLogin.setOnClickListener  { handleLogin() }
         btnSignup.setOnClickListener { handleSignup() }
         txtToggle.setOnClickListener {
             isLoginMode = !isLoginMode
             updateUiMode()
         }
-
         btnRoleNavigator.setOnClickListener { saveRoleAndGo("navigator") }
         btnRoleGuardian.setOnClickListener  { saveRoleAndGo("guardian") }
+
+        // Now check if already logged in — views are ready for any callback
+        if (auth.currentUser != null) {
+            redirectByRole(auth.currentUser!!.uid)
+            return
+        }
+
+        updateUiMode()
     }
 
     // ── UI mode ───────────────────────────────────────────────────────────
@@ -104,17 +113,11 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun showRoleSelection(uid: String) {
-        pendingUid = uid
-        val tilName = findViewById<com.google.android.material.textfield.TextInputLayout>(R.id.tilName)
-        tilName.visibility      = View.GONE
-        txtNameLabel.visibility = View.GONE
-        etEmail.visibility      = View.GONE
-        etPassword.visibility   = View.GONE
-        btnLogin.visibility     = View.GONE
-        btnSignup.visibility    = View.GONE
-        txtToggle.visibility    = View.GONE
-        progressBar.visibility  = View.GONE
-        roleSection.visibility  = View.VISIBLE
+        pendingUid             = uid
+        loginCard.visibility   = View.GONE
+        txtToggle.visibility   = View.GONE
+        progressBar.visibility = View.GONE
+        roleSection.visibility = View.VISIBLE
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────
@@ -157,9 +160,8 @@ class LoginActivity : AppCompatActivity() {
         auth.createUserWithEmailAndPassword(email, password)
             .addOnSuccessListener { result ->
                 setLoading(false)
-                val uid  = result.user?.uid ?: return@addOnSuccessListener
+                val uid = result.user?.uid ?: return@addOnSuccessListener
 
-                // Save profile using updateChildren — name is never accidentally wiped
                 db.child("users").child(uid).updateChildren(mapOf(
                     "name"       to name,
                     "email"      to email,
@@ -167,7 +169,6 @@ class LoginActivity : AppCompatActivity() {
                     "role"       to ""
                 ))
 
-                // Go straight to role selection immediately
                 Toast.makeText(this,
                     "Account created! Please select your role.",
                     Toast.LENGTH_SHORT).show()
@@ -188,11 +189,8 @@ class LoginActivity : AppCompatActivity() {
             return
         }
 
-        // Save role then navigate — role must be in DB before next screen reads it
         db.child("users").child(uid).child("role").setValue(role)
-            .addOnSuccessListener {
-                navigateByRole(role)
-            }
+            .addOnSuccessListener { navigateByRole(role) }
             .addOnFailureListener { e ->
                 Toast.makeText(this, "Failed to save role: ${e.message}",
                     Toast.LENGTH_LONG).show()

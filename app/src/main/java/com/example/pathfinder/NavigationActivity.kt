@@ -5,10 +5,8 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
-import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -44,22 +42,9 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var txtNavGuide: TextView
     private lateinit var graphHopper: GraphHopperService
 
-    // ── Alert banner ──────────────────────────────────────────────────────
-    private lateinit var alertBanner: CardView
-    private lateinit var txtAlertIcon: TextView
-    private lateinit var txtAlertMessage: TextView
-    private val alertHandler = Handler(Looper.getMainLooper())
-    private var alertDismissRunnable: Runnable? = null
-    private val shownAlerts = mutableSetOf<String>()
-    private var lastPlacesCheckTime = 0L
-    private val PLACES_CHECK_INTERVAL = 15_000L
-    private val PLACES_RADIUS = 40
-    private var lastAlertedStepIndex = -1
-
     private var destination: LatLng? = null
     private var currentLocation: LatLng? = null
 
-    // ── Camera smoothing ──────────────────────────────────────────────────
     private var lastCameraLocation: LatLng? = null
     private val CAMERA_UPDATE_MIN_DISTANCE = 3f
 
@@ -79,11 +64,10 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private val APPROACH_DISTANCE = 20
     private val AT_POINT_DISTANCE = 8
 
-    // ── Rerouting — atomic flag prevents race conditions ─────────────────
     private val isRerouting = AtomicBoolean(false)
     private var lastRerouteTime = 0L
-    private val REROUTE_COOLDOWN  = 10_000L   // reduced from 15s so it recovers faster
-    private val REROUTE_THRESHOLD = 40f        // reduced from 50m — catch drift sooner
+    private val REROUTE_COOLDOWN  = 10_000L
+    private val REROUTE_THRESHOLD = 40f
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -106,11 +90,8 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
 
         receiveDestination()
 
-        mapView         = findViewById(R.id.mapView)
-        txtNavGuide     = findViewById(R.id.txtNavGuide)
-        alertBanner     = findViewById(R.id.alertBanner)
-        txtAlertIcon    = findViewById(R.id.txtAlertIcon)
-        txtAlertMessage = findViewById(R.id.txtAlertMessage)
+        mapView     = findViewById(R.id.mapView)
+        txtNavGuide = findViewById(R.id.txtNavGuide)
 
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync(this)
@@ -140,6 +121,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         setupLocationClient()
         setupTextToSpeech()
 
+        // ─── Where Am I ──────────────────────────────────────────────────
         findViewById<Button>(R.id.btnWhereAmI).setOnClickListener {
             val current = currentLocation ?: return@setOnClickListener
             googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(current, 17f))
@@ -226,7 +208,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     override fun onResume()  { super.onResume(); mapView.onResume(); checkLocationPermission() }
     override fun onPause()   { super.onPause();  mapView.onPause();  stopLocationUpdates() }
     override fun onDestroy() {
-        alertDismissRunnable?.let { alertHandler.removeCallbacks(it) }
         mapView.onDestroy()
         if (::tts.isInitialized) tts.shutdown()
         super.onDestroy()
@@ -334,11 +315,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                     routeDrawn = true
                 }
 
-                if (stepList.isNotEmpty()) {
-                    checkStepProgress()
-                    checkStepAlerts()
-                    checkPlacesAlerts(newLoc)
-                }
+                if (stepList.isNotEmpty()) checkStepProgress()
             }
         }
     }
@@ -361,7 +338,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 if (route == null || route.steps.isEmpty()) {
                     Toast.makeText(this@NavigationActivity,
                         "Could not get route. Check your connection.", Toast.LENGTH_LONG).show()
-                    // Reset rerouting flag so it can try again
                     isRerouting.set(false)
                     return@withContext
                 }
@@ -369,15 +345,12 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 stepList.clear()
                 stepList.addAll(route.steps)
 
-                // Full state reset on every new route fetch
                 isRerouting.set(false)
-                currentStepIndex     = 0
-                spokenEntry          = false
-                spokenApproach       = false
-                spokenAtPoint        = false
-                lastAlertedStepIndex = -1
-                shownAlerts.clear()
-                lastCameraLocation   = null   // force camera update after reroute
+                currentStepIndex   = 0
+                spokenEntry        = false
+                spokenApproach     = false
+                spokenAtPoint      = false
+                lastCameraLocation = null
 
                 routePolyline?.remove()
                 routePolyline = googleMap.addPolyline(
@@ -400,7 +373,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    // ═════════ Step entry — UNTOUCHED ═════════════════════════════════════
+    // ═════════ Step entry ═════════════════════════════════════════════════
 
     private fun enterStep(index: Int) {
         if (index >= stepList.size) return
@@ -421,7 +394,7 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         spokenEntry = true
     }
 
-    // ═════════ Navigation tick — UNTOUCHED ════════════════════════════════
+    // ═════════ Navigation tick ════════════════════════════════════════════
 
     private fun checkStepProgress() {
         val loc = currentLocation ?: return
@@ -431,7 +404,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         val distToEnd = distanceTo(loc, step.endPoint)
         val isFinal   = currentStepIndex == stepList.size - 1
 
-        // Off-route check on background thread — atomic flag prevents races
         val now = System.currentTimeMillis()
         if (!isRerouting.get() && (now - lastRerouteTime) > REROUTE_COOLDOWN) {
             val locSnapshot = loc
@@ -468,105 +440,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    // ═════════ Alert system ═══════════════════════════════════════════════
-
-    private fun checkStepAlerts() {
-        val loc = currentLocation ?: return
-        if (currentStepIndex >= stepList.size) return
-        if (currentStepIndex == lastAlertedStepIndex) return
-
-        val step      = stepList[currentStepIndex]
-        val distToEnd = distanceTo(loc, step.endPoint)
-        if (distToEnd > 30) return
-
-        // Only alert if there IS a next step — no point alerting at the final step
-        val nextStep = stepList.getOrNull(currentStepIndex + 1) ?: return
-
-        // Sign-only detection — reliable everywhere, no map data dependency
-        val alert: AlertInfo? = when (nextStep.sign) {
-            6     -> AlertInfo("🔄", "Roundabout ahead",       "#7C3AED", "Roundabout ahead.")
-            -3    -> AlertInfo("⬅️", "Sharp left turn ahead",  "#EA580C", "Sharp left turn ahead.")
-            3     -> AlertInfo("➡️", "Sharp right turn ahead", "#EA580C", "Sharp right turn ahead.")
-            -2, 2 -> AlertInfo("🔀", "Intersection ahead",     "#F59E0B", "Intersection ahead.")
-            -1, 1 -> AlertInfo("↗️", "Slight turn ahead",      "#0073E6", "Slight turn ahead.")
-            7, 8  -> AlertInfo("🔀", "Keep left or right",     "#F59E0B", "Stay on your side.")
-            else  -> null   // sign 0 (straight) and sign 4 (finish) — no alert needed
-        }
-
-        if (alert != null) {
-            lastAlertedStepIndex = currentStepIndex
-            showAlert(alert, vibrateOnShow = true)
-        }
-    }
-
-
-    // Places API fallback — still runs for traffic lights since those aren't
-    // detectable from road_class alone
-    private fun checkPlacesAlerts(loc: LatLng) {
-        val now = System.currentTimeMillis()
-        if (now - lastPlacesCheckTime < PLACES_CHECK_INTERVAL) return
-        lastPlacesCheckTime = now
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json?" +
-                        "location=${loc.latitude},${loc.longitude}" +
-                        "&radius=$PLACES_RADIUS" +
-                        "&keyword=traffic+light|traffic+signal" +
-                        "&key=${getString(R.string.api_key)}"
-
-                val json    = JSONObject(URL(url).readText())
-                val results = json.getJSONArray("results")
-
-                for (i in 0 until results.length()) {
-                    val place   = results.getJSONObject(i)
-                    val placeId = place.getString("place_id")
-                    val name    = place.getString("name").lowercase()
-
-                    if (placeId in shownAlerts) continue
-                    shownAlerts.add(placeId)
-
-                    if (name.contains("traffic") || name.contains("signal") ||
-                        name.contains("light")
-                    ) {
-                        withContext(Dispatchers.Main) {
-                            showAlert(
-                                AlertInfo("🚦", "Traffic light ahead", "#DC2626",
-                                    "Traffic light ahead."),
-                                vibrateOnShow = true
-                            )
-                        }
-                        break
-                    }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-    }
-
-    private fun showAlert(alert: AlertInfo, vibrateOnShow: Boolean) {
-        alertDismissRunnable?.let { alertHandler.removeCallbacks(it) }
-
-        txtAlertIcon.text    = alert.icon
-        txtAlertMessage.text = alert.message
-        alertBanner.setCardBackgroundColor(android.graphics.Color.parseColor(alert.color))
-
-        alertBanner.alpha      = 0f
-        alertBanner.visibility = View.VISIBLE
-        alertBanner.animate().alpha(1f).setDuration(200).start()
-
-        if (::tts.isInitialized)
-            tts.speak(alert.tts, TextToSpeech.QUEUE_ADD, null, "ALERT_${alert.tts.hashCode()}")
-
-        if (vibrateOnShow) vibrateAlert()
-
-        alertDismissRunnable = Runnable {
-            alertBanner.animate().alpha(0f).setDuration(300).withEndAction {
-                alertBanner.visibility = View.GONE
-            }.start()
-        }
-        alertHandler.postDelayed(alertDismissRunnable!!, 4_000L)
-    }
-
     // ═════════ Off-route ══════════════════════════════════════════════════
 
     private fun isOffRoute(loc: LatLng): Boolean {
@@ -589,18 +462,16 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                     a.latitude + t * abLat, a.longitude + t * abLng, dist
                 )
                 if (dist[0] < minDist) minDist = dist[0]
-                if (minDist < 10f) return false   // early exit — clearly on route
+                if (minDist < 10f) return false
             }
         }
         return minDist > REROUTE_THRESHOLD
     }
 
     private fun triggerReroute(loc: LatLng) {
-        // compareAndSet ensures only one reroute fires even if multiple
-        // background coroutines detect off-route simultaneously
         if (!isRerouting.compareAndSet(false, true)) return
         lastRerouteTime = System.currentTimeMillis()
-        routeDrawn = false   // allow fetchRoute to draw a new polyline
+        routeDrawn = false
         sayAndShow("Off route. Recalculating.")
         destination?.let { fetchRoute(loc, it) }
     }
@@ -639,13 +510,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         else { @Suppress("DEPRECATION") vibrator.vibrate(pattern, -1) }
     }
 
-    private fun vibrateAlert() {
-        val pattern = longArrayOf(0, 120, 80, 120, 80, 120)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
-        else { @Suppress("DEPRECATION") vibrator.vibrate(pattern, -1) }
-    }
-
     private fun Int.dpToPx(): Int = (this * resources.displayMetrics.density).toInt()
 
     private fun distanceTo(from: LatLng, to: LatLng): Int {
@@ -659,10 +523,3 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
     }
 }
-
-data class AlertInfo(
-    val icon:    String,
-    val message: String,
-    val color:   String,
-    val tts:     String
-)
