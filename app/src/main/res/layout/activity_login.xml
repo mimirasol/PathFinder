@@ -170,7 +170,8 @@
                     app:boxCornerRadiusBottomEnd="12dp"
                     app:boxStrokeColor="@android:color/transparent"
                     app:hintTextColor="#8A94A6"
-                    app:passwordToggleEnabled="true">
+                    app:passwordToggleEnabled="true"
+                    app:passwordToggleTint="#4A5568">
 
                     <EditText
                         android:id="@+id/etPassword"

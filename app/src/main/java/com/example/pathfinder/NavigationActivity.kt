@@ -1,12 +1,14 @@
 package com.example.pathfinder
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Build
 import android.os.Bundle
-import android.os.Looper
-import android.speech.tts.TextToSpeech
+import android.os.IBinder
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -18,63 +20,114 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
-import com.google.android.gms.location.*
 import com.google.android.gms.maps.*
 import com.google.android.gms.maps.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import java.net.URL
-import java.util.*
-import java.util.concurrent.atomic.AtomicBoolean
 
 class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var mapView: MapView
     private lateinit var googleMap: GoogleMap
-    private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private lateinit var locationCallback: LocationCallback
-    private lateinit var tts: TextToSpeech
     private lateinit var txtNavGuide: TextView
-    private lateinit var graphHopper: GraphHopperService
 
-    private var destination: LatLng? = null
-    private var currentLocation: LatLng? = null
-
-    private var lastCameraLocation: LatLng? = null
-    private val CAMERA_UPDATE_MIN_DISTANCE = 3f
-
-    private var routePolyline: Polyline? = null
-    private var routeDrawn = false
-    private var stepList: MutableList<GraphHopperStep> = mutableListOf()
-    private var currentStepIndex = 0
+    private var navService: NavigationService? = null
+    private var isBound = false
     private var navArrowMarker: Marker? = null
     private var youMarker: Marker? = null
-    private lateinit var vibrator: Vibrator
+    private var routePolyline: Polyline? = null
+    private var currentLocation: LatLng? = null
 
-    private var currentGuideText = ""
-    private var spokenEntry    = false
-    private var spokenApproach = false
-    private var spokenAtPoint  = false
-
-    private val APPROACH_DISTANCE = 20
-    private val AT_POINT_DISTANCE = 8
-
-    private val isRerouting = AtomicBoolean(false)
-    private var lastRerouteTime = 0L
-    private val REROUTE_COOLDOWN  = 10_000L
-    private val REROUTE_THRESHOLD = 40f
-
+    // ── Permission launcher ───────────────────────────────────────────────
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         if (perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        ) startLocationUpdates()
+        ) startNavService()
+    }
+
+    // ── Service connection ────────────────────────────────────────────────
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val nb = binder as NavigationService.NavBinder
+            navService = nb.getService()
+            isBound    = true
+
+            navService?.setCallback(object : NavigationService.NavCallback {
+
+                override fun onGuideUpdate(text: String, distanceM: Int) {
+                    txtNavGuide.text = "$text — $distanceM m"
+                    findViewById<TextView>(R.id.txtDistance).text = "$distanceM m"
+                }
+
+                override fun onLocationUpdate(loc: LatLng, bearing: Float) {
+                    currentLocation = loc
+                    if (!::googleMap.isInitialized) return
+                    val camPosition = CameraPosition.Builder()
+                        .target(loc).zoom(19f).tilt(60f).bearing(bearing).build()
+                    googleMap.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(camPosition)
+                    )
+                    if (navArrowMarker == null) {
+                        navArrowMarker = googleMap.addMarker(
+                            MarkerOptions()
+                                .position(loc)
+                                .icon(vectorToBitmapDescriptor(R.drawable.nav_arrow))
+                                .rotation(bearing)
+                                .anchor(0.5f, 0.5f)
+                                .flat(true)
+                                .zIndex(1f)
+                        )
+                    } else {
+                        navArrowMarker!!.position = loc
+                        navArrowMarker!!.rotation = bearing
+                    }
+                }
+
+                override fun onRouteReady(route: GraphHopperRoute) {
+                    if (!::googleMap.isInitialized) return
+                    routePolyline?.remove()
+                    routePolyline = googleMap.addPolyline(
+                        PolylineOptions()
+                            .addAll(route.points)
+                            .width(14f)
+                            .color(0xFF0073E6.toInt())
+                    )
+                    findViewById<TextView>(R.id.txtDistance).text =
+                        "${route.distanceMeters} m"
+                    findViewById<TextView>(R.id.txtTime).text =
+                        "${route.durationMs / 60000} min"
+                }
+
+                override fun onArrived() {
+                    Toast.makeText(
+                        this@NavigationActivity,
+                        "You have arrived!", Toast.LENGTH_LONG
+                    ).show()
+                    finish()
+                }
+                override fun onBearingUpdate(bearing: Float) {
+                    if (!::googleMap.isInitialized) return
+                    // Only update camera bearing — don't re-center, just rotate
+                    navArrowMarker?.rotation = bearing
+                    val current = currentLocation ?: return
+                    val camPosition = CameraPosition.Builder()
+                        .target(current).zoom(19f).tilt(60f).bearing(bearing).build()
+                    googleMap.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(camPosition)
+                    )
+                }
+            })
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            navService = null
+            isBound    = false
+        }
     }
 
     // ═════════ Lifecycle ══════════════════════════════════════════════════
@@ -88,25 +141,10 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
             window.insetsController?.hide(android.view.WindowInsets.Type.statusBars())
         }
 
-        receiveDestination()
-
         mapView     = findViewById(R.id.mapView)
         txtNavGuide = findViewById(R.id.txtNavGuide)
-
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync(this)
-
-        graphHopper = GraphHopperService(getString(R.string.graph_api_key))
-
-        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vm = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            vm.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            getSystemService(VIBRATOR_SERVICE) as Vibrator
-        }
-
-        findViewById<Button>(R.id.btnEnd).setOnClickListener { finish() }
 
         val bottomBar = findViewById<CardView>(R.id.bottomBar)
         ViewCompat.setOnApplyWindowInsetsListener(bottomBar) { view, insets ->
@@ -118,10 +156,11 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
             insets
         }
 
-        setupLocationClient()
-        setupTextToSpeech()
+        findViewById<Button>(R.id.btnEnd).setOnClickListener {
+            stopNavService()
+            finish()
+        }
 
-        // ─── Where Am I ──────────────────────────────────────────────────
         findViewById<Button>(R.id.btnWhereAmI).setOnClickListener {
             val current = currentLocation ?: return@setOnClickListener
             googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(current, 17f))
@@ -188,7 +227,11 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                     withContext(Dispatchers.Main) {
                         if (landmarkNames.isNotEmpty())
                             showLandmarksBottomSheet(
-                                this@NavigationActivity, streetName, landmarkNames, tts
+                                context    = this@NavigationActivity,
+                                streetName = streetName,
+                                landmarks  = landmarkNames,
+                                onSpeak    = { navService?.speak(it) },
+                                onStop     = { navService?.stopSpeaking() }
                             )
                         else
                             Toast.makeText(this@NavigationActivity,
@@ -203,66 +246,53 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
             }
         }
+
+        checkPermissionAndStart()
     }
 
-    override fun onResume()  { super.onResume(); mapView.onResume(); checkLocationPermission() }
-    override fun onPause()   { super.onPause();  mapView.onPause();  stopLocationUpdates() }
+    override fun onResume() {
+        super.onResume()
+        mapView.onResume()
+        if (!isBound) bindToService()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        mapView.onPause()
+        if (isBound) {
+            navService?.setCallback(null)
+            unbindService(serviceConnection)
+            isBound = false
+        }
+    }
+
     override fun onDestroy() {
         mapView.onDestroy()
-        if (::tts.isInitialized) tts.shutdown()
         super.onDestroy()
     }
+
     override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
+
     override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState); mapView.onSaveInstanceState(outState)
+        super.onSaveInstanceState(outState)
+        mapView.onSaveInstanceState(outState)
     }
 
-    // ═════════ Permissions + Location ═════════════════════════════════════
-
-    private fun checkLocationPermission() {
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) startLocationUpdates()
-        else permissionLauncher.launch(
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION)
-        )
-    }
-
-    private fun startLocationUpdates() {
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) return
-        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
-            .setMinUpdateIntervalMillis(1000L)
-            .setMinUpdateDistanceMeters(2f)
-            .build()
-        fusedLocationClient.requestLocationUpdates(req, locationCallback, Looper.getMainLooper())
-    }
-
-    private fun stopLocationUpdates() {
-        if (::fusedLocationClient.isInitialized)
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-    }
-
-    // ═════════ Setup ══════════════════════════════════════════════════════
-
-    private fun receiveDestination() {
-        val lat = intent.getDoubleExtra("dest_lat", 0.0)
-        val lng = intent.getDoubleExtra("dest_lng", 0.0)
-        if (lat != 0.0 && lng != 0.0) destination = LatLng(lat, lng)
-    }
+    // ═════════ Map ════════════════════════════════════════════════════════
 
     override fun onMapReady(map: GoogleMap) {
         googleMap = map
         googleMap.uiSettings.isCompassEnabled = true
         googleMap.mapType = GoogleMap.MAP_TYPE_NORMAL
-        destination?.let {
-            googleMap.addMarker(MarkerOptions().position(it).title("Destination"))
-            googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(it, 17f))
+
+        val lat = intent.getDoubleExtra("dest_lat", 0.0)
+        val lng = intent.getDoubleExtra("dest_lng", 0.0)
+        if (lat != 0.0 && lng != 0.0) {
+            val dest = LatLng(lat, lng)
+            googleMap.addMarker(MarkerOptions().position(dest).title("Destination"))
+            googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(dest, 17f))
         }
+
         if (ContextCompat.checkSelfPermission(
                 this, Manifest.permission.ACCESS_FINE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
@@ -272,218 +302,54 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun setupLocationClient() {
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val location = result.lastLocation ?: return
-                val newLoc   = LatLng(location.latitude, location.longitude)
-                currentLocation = newLoc
+    // ═════════ Service management ═════════════════════════════════════════
 
-                val bearing = if (location.hasBearing()) location.bearing else 0f
-
-                val shouldUpdateCamera = lastCameraLocation?.let { last ->
-                    val dist = FloatArray(1)
-                    Location.distanceBetween(
-                        last.latitude, last.longitude,
-                        newLoc.latitude, newLoc.longitude, dist
-                    )
-                    dist[0] >= CAMERA_UPDATE_MIN_DISTANCE
-                } ?: true
-
-                if (shouldUpdateCamera) {
-                    lastCameraLocation = newLoc
-                    val camPosition = CameraPosition.Builder()
-                        .target(newLoc).zoom(19f).tilt(60f).bearing(bearing).build()
-                    googleMap.animateCamera(CameraUpdateFactory.newCameraPosition(camPosition))
-                }
-
-                if (navArrowMarker == null) {
-                    navArrowMarker = googleMap.addMarker(
-                        MarkerOptions()
-                            .position(newLoc)
-                            .icon(vectorToBitmapDescriptor(R.drawable.nav_arrow))
-                            .rotation(bearing).anchor(0.5f, 0.5f).flat(true).zIndex(1f)
-                    )
-                } else {
-                    navArrowMarker!!.position = newLoc
-                    navArrowMarker!!.rotation = bearing
-                }
-
-                if (!routeDrawn && destination != null) {
-                    fetchRoute(newLoc, destination!!)
-                    routeDrawn = true
-                }
-
-                if (stepList.isNotEmpty()) checkStepProgress()
-            }
+    private fun checkPermissionAndStart() {
+        val permissionsNeeded = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionsNeeded.add(android.Manifest.permission.POST_NOTIFICATIONS)
         }
+        val allGranted = permissionsNeeded.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (allGranted) startNavService()
+        else permissionLauncher.launch(permissionsNeeded.toTypedArray())
     }
 
-    private fun setupTextToSpeech() {
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) tts.language = Locale.US
+    private fun startNavService() {
+        val lat = intent.getDoubleExtra("dest_lat", 0.0)
+        val lng = intent.getDoubleExtra("dest_lng", 0.0)
+        val serviceIntent = Intent(this, NavigationService::class.java).apply {
+            putExtra(NavigationService.EXTRA_DEST_LAT, lat)
+            putExtra(NavigationService.EXTRA_DEST_LNG, lng)
+            putExtra(NavigationService.EXTRA_API_KEY, getString(R.string.graph_api_key))
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+        bindToService()
     }
 
-    // ═════════ Route fetching ═════════════════════════════════════════════
-
-    private fun fetchRoute(origin: LatLng, dest: LatLng) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val route = graphHopper.getRoute(
-                origin.latitude, origin.longitude,
-                dest.latitude,   dest.longitude
-            )
-            withContext(Dispatchers.Main) {
-                if (route == null || route.steps.isEmpty()) {
-                    Toast.makeText(this@NavigationActivity,
-                        "Could not get route. Check your connection.", Toast.LENGTH_LONG).show()
-                    isRerouting.set(false)
-                    return@withContext
-                }
-
-                stepList.clear()
-                stepList.addAll(route.steps)
-
-                isRerouting.set(false)
-                currentStepIndex   = 0
-                spokenEntry        = false
-                spokenApproach     = false
-                spokenAtPoint      = false
-                lastCameraLocation = null
-
-                routePolyline?.remove()
-                routePolyline = googleMap.addPolyline(
-                    PolylineOptions()
-                        .addAll(route.points)
-                        .width(14f)
-                        .color(0xFF0073E6.toInt())
-                )
-
-                findViewById<TextView>(R.id.txtDistance).text = "${route.distanceMeters} m"
-                findViewById<TextView>(R.id.txtTime).text     = "${route.durationMs / 60000} min"
-
-                currentLocation?.let { loc ->
-                    val camPosition = CameraPosition.Builder()
-                        .target(loc).zoom(19f).tilt(60f).bearing(0f).build()
-                    googleMap.moveCamera(CameraUpdateFactory.newCameraPosition(camPosition))
-                }
-                enterStep(0)
-            }
-        }
+    private fun bindToService() {
+        val intent = Intent(this, NavigationService::class.java)
+        bindService(intent, serviceConnection, BIND_AUTO_CREATE)
     }
 
-    // ═════════ Step entry ═════════════════════════════════════════════════
-
-    private fun enterStep(index: Int) {
-        if (index >= stepList.size) return
-        currentStepIndex = index
-        spokenEntry      = false
-        spokenApproach   = false
-        spokenAtPoint    = false
-
-        val step    = stepList[index]
-        val isFinal = index == stepList.size - 1
-
-        val entryCue = when {
-            index == 0 -> "${step.text} for ${step.distanceMeters} meters."
-            isFinal    -> "Continue for ${step.distanceMeters} meters. Your destination is ahead."
-            else       -> "Continue straight for ${step.distanceMeters} meters."
+    private fun stopNavService() {
+        if (isBound) {
+            navService?.setCallback(null)
+            unbindService(serviceConnection)
+            isBound = false
         }
-        sayAndShow(entryCue)
-        spokenEntry = true
-    }
-
-    // ═════════ Navigation tick ════════════════════════════════════════════
-
-    private fun checkStepProgress() {
-        val loc = currentLocation ?: return
-        if (currentStepIndex >= stepList.size) return
-
-        val step      = stepList[currentStepIndex]
-        val distToEnd = distanceTo(loc, step.endPoint)
-        val isFinal   = currentStepIndex == stepList.size - 1
-
-        val now = System.currentTimeMillis()
-        if (!isRerouting.get() && (now - lastRerouteTime) > REROUTE_COOLDOWN) {
-            val locSnapshot = loc
-            lifecycleScope.launch(Dispatchers.Default) {
-                if (isOffRoute(locSnapshot)) {
-                    withContext(Dispatchers.Main) { triggerReroute(locSnapshot) }
-                }
-            }
-        }
-
-        txtNavGuide.text = "$currentGuideText — $distToEnd m"
-
-        if (!spokenApproach && distToEnd <= APPROACH_DISTANCE && distToEnd > AT_POINT_DISTANCE) {
-            spokenApproach = true
-            val nextStep = stepList.getOrNull(currentStepIndex + 1)
-            val cue = when {
-                isFinal || nextStep == null -> "Your destination is in $distToEnd meters."
-                else -> "In $distToEnd meters, ${nextStep.text.lowercase()}."
-            }
-            sayAndShow(cue)
-            vibrateApproach()
-        }
-
-        if (!spokenAtPoint && distToEnd <= AT_POINT_DISTANCE) {
-            spokenAtPoint = true
-            val nextStep = stepList.getOrNull(currentStepIndex + 1)
-            val cue = when {
-                isFinal || nextStep == null -> "You have arrived at your destination."
-                else -> "${nextStep.text}."
-            }
-            sayAndShow(cue)
-            vibrateAtPoint()
-            if (!isFinal) txtNavGuide.postDelayed({ enterStep(currentStepIndex + 1) }, 2500L)
-        }
-    }
-
-    // ═════════ Off-route ══════════════════════════════════════════════════
-
-    private fun isOffRoute(loc: LatLng): Boolean {
-        var minDist = Float.MAX_VALUE
-        for (step in stepList) {
-            val path = step.path
-            if (path.size < 2) continue
-            for (i in 0 until path.size - 1) {
-                val a = path[i]; val b = path[i + 1]
-                val abLat   = b.latitude  - a.latitude
-                val abLng   = b.longitude - a.longitude
-                val apLat   = loc.latitude  - a.latitude
-                val apLng   = loc.longitude - a.longitude
-                val abLenSq = abLat * abLat + abLng * abLng
-                val t = if (abLenSq == 0.0) 0.0
-                else ((apLat * abLat + apLng * abLng) / abLenSq).coerceIn(0.0, 1.0)
-                val dist = FloatArray(1)
-                Location.distanceBetween(
-                    loc.latitude, loc.longitude,
-                    a.latitude + t * abLat, a.longitude + t * abLng, dist
-                )
-                if (dist[0] < minDist) minDist = dist[0]
-                if (minDist < 10f) return false
-            }
-        }
-        return minDist > REROUTE_THRESHOLD
-    }
-
-    private fun triggerReroute(loc: LatLng) {
-        if (!isRerouting.compareAndSet(false, true)) return
-        lastRerouteTime = System.currentTimeMillis()
-        routeDrawn = false
-        sayAndShow("Off route. Recalculating.")
-        destination?.let { fetchRoute(loc, it) }
+        stopService(Intent(this, NavigationService::class.java))
     }
 
     // ═════════ Helpers ════════════════════════════════════════════════════
-
-    private fun sayAndShow(text: String) {
-        currentGuideText = text.trimEnd('.')
-        txtNavGuide.text = currentGuideText
-        if (::tts.isInitialized)
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
-    }
 
     private fun vectorToBitmapDescriptor(drawableResId: Int): BitmapDescriptor {
         val drawable = ContextCompat.getDrawable(this, drawableResId)!!
@@ -497,29 +363,5 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    private fun vibrateApproach() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            vibrator.vibrate(VibrationEffect.createOneShot(200L, VibrationEffect.DEFAULT_AMPLITUDE))
-        else { @Suppress("DEPRECATION") vibrator.vibrate(200L) }
-    }
-
-    private fun vibrateAtPoint() {
-        val pattern = longArrayOf(0, 250, 150, 250)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
-        else { @Suppress("DEPRECATION") vibrator.vibrate(pattern, -1) }
-    }
-
     private fun Int.dpToPx(): Int = (this * resources.displayMetrics.density).toInt()
-
-    private fun distanceTo(from: LatLng, to: LatLng): Int {
-        val r = FloatArray(1)
-        Location.distanceBetween(from.latitude, from.longitude, to.latitude, to.longitude, r)
-        return r[0].toInt()
-    }
-
-    private fun speakInstruction(text: String) {
-        if (::tts.isInitialized)
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
-    }
 }

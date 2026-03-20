@@ -23,7 +23,6 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doOnTextChanged
@@ -66,23 +65,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var currentLocation: LatLng? = null
     private var hasCenteredMap = false
 
-    // ── Circle / companion state ──────────────────────────────────────────
     private val db by lazy {
-        FirebaseDatabase.getInstance("https://pathfinder-bdc3e-default-rtdb.asia-southeast1.firebasedatabase.app").reference
+        FirebaseDatabase.getInstance(
+            "https://pathfinder-bdc3e-default-rtdb.asia-southeast1.firebasedatabase.app"
+        ).reference
     }
     private var circleCode: String? = null
-
-    // uid → full user data (for the dialog list)
     private val companionData    = mutableMapOf<String, CompanionUser>()
     private val companionMarkers = mutableMapOf<String, Marker>()
     private val memberListeners  = mutableMapOf<String, ValueEventListener>()
     private var membersListener: ValueEventListener? = null
-
     private lateinit var btnCompanion: Button
 
     companion object {
         private const val LOCATION_PERMISSION_REQUEST = 1000
-        private const val ONLINE_THRESHOLD_MS = 2 * 60 * 1000L   // 2 minutes
+        private const val ONLINE_THRESHOLD_MS = 5 * 60 * 1000L
     }
 
     // ═════════ Lifecycle ══════════════════════════════════════════════════
@@ -119,10 +116,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnClearSearch.setOnClickListener {
             txtDestination.text?.clear()
             destinationLatLng = null
-            destinationMarker?.remove()
-            destinationMarker = null
-            currentPolyline?.remove()
-            currentPolyline = null
+            destinationMarker?.remove(); destinationMarker = null
+            currentPolyline?.remove();   currentPolyline = null
         }
 
         tts = TextToSpeech(this) { status ->
@@ -193,11 +188,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     val landmarkNames = ArrayList<String>()
 
                     for (i in 0 until minOf(results.length(), 5)) {
-                        val place = results.getJSONObject(i)
-                        val name  = place.getString("name")
-                        val loc   = place.getJSONObject("geometry").getJSONObject("location")
-                        val lat   = loc.getDouble("lat")
-                        val lng   = loc.getDouble("lng")
+                        val place   = results.getJSONObject(i)
+                        val name    = place.getString("name")
+                        val loc     = place.getJSONObject("geometry").getJSONObject("location")
+                        val lat     = loc.getDouble("lat")
+                        val lng     = loc.getDouble("lng")
                         val distArr = FloatArray(1)
                         Location.distanceBetween(
                             current.latitude, current.longitude, lat, lng, distArr
@@ -216,7 +211,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
                     withContext(Dispatchers.Main) {
                         if (landmarkNames.isNotEmpty())
-                            showLandmarksDialog(streetName, landmarkNames)
+                            showLandmarksBottomSheet(this@MainActivity, streetName, landmarkNames, tts)
                         else
                             Toast.makeText(this@MainActivity,
                                 "No landmarks found nearby", Toast.LENGTH_SHORT).show()
@@ -255,14 +250,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            startActivity(
-                Intent(this, NavigationActivity::class.java).apply {
-                    putExtra("dest_lat", dest.latitude)
-                    putExtra("dest_lng", dest.longitude)
-                }
-            )
+            startActivity(Intent(this, NavigationActivity::class.java).apply {
+                putExtra("dest_lat", dest.latitude)
+                putExtra("dest_lng", dest.longitude)
+            })
         }
-
     }
 
     override fun onResume() {
@@ -275,6 +267,92 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         super.onPause()
         mapView.onPause()
         detachAllListeners()
+    }
+
+    override fun onDestroy() {
+        detachAllListeners()
+        mapView.onDestroy()
+        if (::tts.isInitialized) tts.shutdown()
+        super.onDestroy()
+    }
+
+    override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        mapView.onSaveInstanceState(outState)
+    }
+
+    // ═════════ Map ════════════════════════════════════════════════════════
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == LOCATION_PERMISSION_REQUEST &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            if (::googleMap.isInitialized && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) googleMap.isMyLocationEnabled = true
+            startService(Intent(this, LocationSharingService::class.java))
+        }
+    }
+
+    override fun onMapReady(map: GoogleMap) {
+        googleMap = map
+
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            googleMap.isMyLocationEnabled = true
+            startService(Intent(this, LocationSharingService::class.java))
+
+            val fusedClient = LocationServices.getFusedLocationProviderClient(this)
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10_000L)
+                .setMinUpdateIntervalMillis(5_000L).build()
+
+            fusedClient.requestLocationUpdates(locationRequest, object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val loc    = result.lastLocation ?: return
+                    val latLng = LatLng(loc.latitude, loc.longitude)
+                    currentLocation = latLng
+                    if (!hasCenteredMap) {
+                        googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng, 17f))
+                        hasCenteredMap = true
+                        youMarker?.remove()
+                        youMarker = googleMap.addMarker(
+                            MarkerOptions().position(latLng).title("You")
+                        )
+                    }
+                }
+            }, Looper.getMainLooper())
+        } else {
+            ActivityCompat.requestPermissions(this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_REQUEST)
+        }
+    }
+
+    // ═════════ Route preview ══════════════════════════════════════════════
+
+    private fun drawRoute(origin: LatLng, destination: LatLng) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val route = graphHopperService.getRoute(
+                origin.latitude, origin.longitude,
+                destination.latitude, destination.longitude
+            )
+            withContext(Dispatchers.Main) {
+                if (route != null && route.points.isNotEmpty()) {
+                    currentPolyline?.remove()
+                    currentPolyline = googleMap.addPolyline(
+                        PolylineOptions().addAll(route.points).color(Color.BLUE).width(10f)
+                    )
+                } else {
+                    Toast.makeText(this@MainActivity, "Route not found", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     // ═════════ Circle ═════════════════════════════════════════════════════
@@ -298,7 +376,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun createCircle() {
         val uid  = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val code = generateCircleCode()
-
         db.child("circles").child(code).updateChildren(
             mapOf("createdBy" to uid, "members/$uid" to true)
         ).addOnSuccessListener {
@@ -331,14 +408,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         Toast.makeText(this, "Left circle", Toast.LENGTH_SHORT).show()
     }
 
-    // ═════════ Companion button badge ════════════════════════════════════
-
-    /**
-     * Updates the Companion button label:
-     *   No circle      → "Companion"
-     *   Circle, 0 live → "Companion (0)"
-     *   Circle, N live → "Companion (N)" where N = online companions
-     */
     private fun updateCompanionButton() {
         val code = circleCode
         if (code.isNullOrEmpty()) {
@@ -352,11 +421,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun isOnline(user: CompanionUser): Boolean {
-        if (user.location.lastUpdated == 0L) return false
+        // lastUpdated == 0 means they just joined and haven't sent location yet
+        // treat as online (pending) so they don't show as offline immediately
+        if (user.location.lastUpdated == 0L) return true
         return (System.currentTimeMillis() - user.location.lastUpdated) < ONLINE_THRESHOLD_MS
     }
 
-    // ═════════ Circle dialog ══════════════════════════════════════════════
 
     private fun showCircleDialog(code: String) {
         val uid       = FirebaseAuth.getInstance().currentUser?.uid
@@ -365,7 +435,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             setPadding(64, 32, 64, 16)
         }
 
-        // Circle code
         container.addView(TextView(this).apply {
             text          = code
             textSize      = 38f
@@ -376,7 +445,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             setPadding(0, 0, 0, 24)
         })
 
-        // Section label
         container.addView(TextView(this).apply {
             text      = "Circle members"
             textSize  = 13f
@@ -385,7 +453,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             setPadding(0, 0, 0, 16)
         })
 
-        // Helper: adds one name + dot + status row to container
         fun addRow(name: String, dotColor: String, statusTxt: String) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -414,22 +481,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             container.addView(row)
         }
 
-        // Fetch navigator's own name then populate the full list
         if (uid != null) {
             db.child("users").child(uid)
                 .addListenerForSingleValueEvent(object : ValueEventListener {
                     override fun onDataChange(snap: DataSnapshot) {
                         val self = snap.getValue(CompanionUser::class.java)
                         if (self != null) {
-                            // Navigator row — blue dot, "You · Online/Offline"
-                            val selfOnline = isOnline(self)
+                            // Navigator is always online — they just opened this dialog
                             addRow(
                                 name      = self.name,
-                                dotColor  = if (selfOnline) "#0073E6" else "#AAAAAA",
-                                statusTxt = if (selfOnline) "You · Online" else "You · Offline"
+                                dotColor  = "#0073E6",
+                                statusTxt = "You · Online"
                             )
                         }
-                        // Companion rows
                         if (companionData.isEmpty()) {
                             container.addView(TextView(this@MainActivity).apply {
                                 text      = "No companions have joined yet"
@@ -440,11 +504,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                             })
                         } else {
                             companionData.values.forEach { user ->
-                                val online = isOnline(user)
+                                val online  = isOnline(user)
+                                val pending = user.location.lastUpdated == 0L
                                 addRow(
-                                    name      = user.name,
-                                    dotColor  = if (online) "#4CAF50" else "#AAAAAA",
-                                    statusTxt = if (online) "Online" else "Offline"
+                                    name      = user.name.ifBlank { "Companion" },
+                                    dotColor  = when {
+                                        pending -> "#F59E0B"   // amber — waiting for first location
+                                        online  -> "#4CAF50"   // green — active
+                                        else    -> "#AAAAAA"   // grey — offline
+                                    },
+                                    statusTxt = when {
+                                        pending -> "Joining…"
+                                        online  -> "Online"
+                                        else    -> "Offline"
+                                    }
                                 )
                             }
                         }
@@ -468,17 +541,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             .show()
     }
 
-
     // ═════════ Real-time tracking ═════════════════════════════════════════
 
     private fun listenToCircleMembers(code: String) {
         val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-
         val listener = object : ValueEventListener {
             override fun onDataChange(snap: DataSnapshot) {
                 val activeUids = snap.children.mapNotNull { it.key }.toSet()
-
-                // Remove members who left
                 (memberListeners.keys - activeUids).forEach { uid ->
                     memberListeners.remove(uid)?.let { l ->
                         db.child("users").child(uid).removeEventListener(l)
@@ -486,19 +555,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     companionMarkers.remove(uid)?.remove()
                     companionData.remove(uid)
                 }
-
-                // Add listeners for new members
                 activeUids.forEach { uid ->
                     if (uid != currentUid && uid !in memberListeners) {
                         listenToMemberLocation(uid)
                     }
                 }
-
                 updateCompanionButton()
             }
             override fun onCancelled(error: DatabaseError) {}
         }
-
         membersListener = listener
         db.child("circles").child(code).child("members").addValueEventListener(listener)
     }
@@ -507,16 +572,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val listener = object : ValueEventListener {
             override fun onDataChange(snap: DataSnapshot) {
                 val user = snap.getValue(CompanionUser::class.java) ?: return
-
-                // Update data map
                 companionData[uid] = user
-
-                // Update map marker
                 if (::googleMap.isInitialized && user.location.lat != 0.0) {
                     val pos     = LatLng(user.location.lat, user.location.lng)
                     val title   = "👥 ${user.name}"
                     val snippet = "🔋 ${user.location.battery}%"
-
                     val existing = companionMarkers[uid]
                     if (existing != null) {
                         existing.position = pos
@@ -525,17 +585,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     } else {
                         val marker = googleMap.addMarker(
                             MarkerOptions()
-                                .position(pos)
-                                .title(title)
-                                .snippet(snippet)
+                                .position(pos).title(title).snippet(snippet)
                                 .icon(BitmapDescriptorFactory.defaultMarker(
                                     BitmapDescriptorFactory.HUE_VIOLET))
                         )
                         if (marker != null) companionMarkers[uid] = marker
                     }
                 }
-
-                // Refresh badge every time location updates
                 updateCompanionButton()
             }
             override fun onCancelled(error: DatabaseError) {}
@@ -588,7 +644,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val suggestions =
                     response.autocompletePredictions.map { it.getFullText(null).toString() }
                 txtDestination.setAdapter(
-                    ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, suggestions)
+                    ArrayAdapter(this, R.layout.item_autocomplete, suggestions)
                 )
                 txtDestination.showDropDown()
             }
@@ -610,7 +666,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 val place  = placeResponse.place
                 val name   = place.displayName ?: "Destination"
                 val latLng = place.location ?: return@addOnSuccessListener
-
                 destinationLatLng = latLng
                 currentPolyline?.remove(); currentPolyline = null
                 destinationMarker?.remove()
@@ -625,93 +680,5 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 tts.speak("Navigating to $name", TextToSpeech.QUEUE_FLUSH, null, "DESTINATION")
             }.addOnFailureListener { it.printStackTrace() }
         }.addOnFailureListener { it.printStackTrace() }
-    }
-
-    // ═════════ Map ════════════════════════════════════════════════════════
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == LOCATION_PERMISSION_REQUEST &&
-            grantResults.isNotEmpty() &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED
-        ) {
-            // Permission just granted — safe to start location service now
-            if (::googleMap.isInitialized) googleMap.isMyLocationEnabled = true
-            startService(Intent(this, LocationSharingService::class.java))
-        }
-    }
-
-    override fun onMapReady(map: GoogleMap) {
-        googleMap = map
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED) {
-            googleMap.isMyLocationEnabled = true
-            // Permission already granted — safe to start service
-            startService(Intent(this, LocationSharingService::class.java))
-        } else {
-            ActivityCompat.requestPermissions(this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                LOCATION_PERMISSION_REQUEST)
-        }
-
-        val fusedClient  = LocationServices.getFusedLocationProviderClient(this)
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10_000L)
-            .setMinUpdateIntervalMillis(5_000L).build()
-
-        fusedClient.requestLocationUpdates(locationRequest, object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val loc    = result.lastLocation ?: return
-                val latLng = LatLng(loc.latitude, loc.longitude)
-                currentLocation = latLng
-                if (!hasCenteredMap) {
-                    googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng, 17f))
-                    hasCenteredMap = true
-                    youMarker?.remove()
-                    youMarker = googleMap.addMarker(MarkerOptions().position(latLng).title("You"))
-                }
-            }
-        }, Looper.getMainLooper())
-    }
-
-    // ═════════ Route preview ══════════════════════════════════════════════
-
-    private fun drawRoute(origin: LatLng, destination: LatLng) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val route = graphHopperService.getRoute(
-                origin.latitude, origin.longitude,
-                destination.latitude, destination.longitude
-            )
-            withContext(Dispatchers.Main) {
-                if (route != null && route.points.isNotEmpty()) {
-                    currentPolyline?.remove()
-                    currentPolyline = googleMap.addPolyline(
-                        PolylineOptions().addAll(route.points).color(Color.BLUE).width(10f)
-                    )
-                } else {
-                    Toast.makeText(this@MainActivity, "Route not found", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    // ═════════ Landmarks dialog ═══════════════════════════════════════════
-
-    private fun showLandmarksDialog(streetName: String, landmarkNames: List<String>) {
-        showLandmarksBottomSheet(this, streetName, landmarkNames, tts)
-    }
-
-    // ═════════ Remaining lifecycle ════════════════════════════════════════
-
-    override fun onDestroy() {
-        detachAllListeners()
-        super.onDestroy()
-        mapView.onDestroy()
-    }
-    override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        mapView.onSaveInstanceState(outState)
     }
 }
