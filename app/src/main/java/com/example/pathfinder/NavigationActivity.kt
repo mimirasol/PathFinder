@@ -41,7 +41,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     private var routePolyline: Polyline? = null
     private var currentLocation: LatLng? = null
 
-    // ── Permission launcher ───────────────────────────────────────────────
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
@@ -50,7 +49,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         ) startNavService()
     }
 
-    // ── Service connection ────────────────────────────────────────────────
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val nb = binder as NavigationService.NavBinder
@@ -60,18 +58,26 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
             navService?.setCallback(object : NavigationService.NavCallback {
 
                 override fun onGuideUpdate(text: String, distanceM: Int) {
-                    txtNavGuide.text = "$text — $distanceM m"
+                    txtNavGuide.text = if (distanceM > 0) "$text — $distanceM m" else text
                     findViewById<TextView>(R.id.txtDistance).text = "$distanceM m"
                 }
 
                 override fun onLocationUpdate(loc: LatLng, bearing: Float) {
                     currentLocation = loc
                     if (!::googleMap.isInitialized) return
-                    val camPosition = CameraPosition.Builder()
-                        .target(loc).zoom(19f).tilt(60f).bearing(bearing).build()
+
+                    // Tilted 3D camera — follows user with bearing
                     googleMap.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(camPosition)
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder()
+                                .target(loc)
+                                .zoom(19f)
+                                .tilt(60f)
+                                .bearing(bearing)
+                                .build()
+                        )
                     )
+
                     if (navArrowMarker == null) {
                         navArrowMarker = googleMap.addMarker(
                             MarkerOptions()
@@ -88,8 +94,10 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                     }
                 }
 
-                override fun onRouteReady(route: GraphHopperRoute) {
+                override fun onRouteReady(route: GraphHopperRoute, startLoc: LatLng) {
                     if (!::googleMap.isInitialized) return
+
+                    // Draw route polyline
                     routePolyline?.remove()
                     routePolyline = googleMap.addPolyline(
                         PolylineOptions()
@@ -97,10 +105,21 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                             .width(14f)
                             .color(0xFF0073E6.toInt())
                     )
-                    findViewById<TextView>(R.id.txtDistance).text =
-                        "${route.distanceMeters} m"
-                    findViewById<TextView>(R.id.txtTime).text =
-                        "${route.durationMs / 60000} min"
+                    findViewById<TextView>(R.id.txtDistance).text = "${route.distanceMeters} m"
+                    findViewById<TextView>(R.id.txtTime).text     = "${route.durationMs / 60000} min"
+
+                    // Immediately lock camera to tilted 3D nav view at user's location
+                    // This fires as soon as route is ready — no waiting for first movement
+                    googleMap.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder()
+                                .target(startLoc)
+                                .zoom(19f)
+                                .tilt(60f)
+                                .bearing(0f)
+                                .build()
+                        )
+                    )
                 }
 
                 override fun onArrived() {
@@ -109,17 +128,6 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                         "You have arrived!", Toast.LENGTH_LONG
                     ).show()
                     finish()
-                }
-                override fun onBearingUpdate(bearing: Float) {
-                    if (!::googleMap.isInitialized) return
-                    // Only update camera bearing — don't re-center, just rotate
-                    navArrowMarker?.rotation = bearing
-                    val current = currentLocation ?: return
-                    val camPosition = CameraPosition.Builder()
-                        .target(current).zoom(19f).tilt(60f).bearing(bearing).build()
-                    googleMap.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(camPosition)
-                    )
                 }
             })
         }
@@ -305,39 +313,38 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
     // ═════════ Service management ═════════════════════════════════════════
 
     private fun checkPermissionAndStart() {
-        val permissionsNeeded = mutableListOf(
+        val needed = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissionsNeeded.add(android.Manifest.permission.POST_NOTIFICATIONS)
-        }
-        val allGranted = permissionsNeeded.all {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            needed.add(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val allGranted = needed.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
         if (allGranted) startNavService()
-        else permissionLauncher.launch(permissionsNeeded.toTypedArray())
+        else permissionLauncher.launch(needed.toTypedArray())
     }
 
     private fun startNavService() {
         val lat = intent.getDoubleExtra("dest_lat", 0.0)
         val lng = intent.getDoubleExtra("dest_lng", 0.0)
-        val serviceIntent = Intent(this, NavigationService::class.java).apply {
+        val si  = Intent(this, NavigationService::class.java).apply {
             putExtra(NavigationService.EXTRA_DEST_LAT, lat)
             putExtra(NavigationService.EXTRA_DEST_LNG, lng)
             putExtra(NavigationService.EXTRA_API_KEY, getString(R.string.graph_api_key))
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(si)
+        else startService(si)
         bindToService()
     }
 
     private fun bindToService() {
-        val intent = Intent(this, NavigationService::class.java)
-        bindService(intent, serviceConnection, BIND_AUTO_CREATE)
+        bindService(
+            Intent(this, NavigationService::class.java),
+            serviceConnection, BIND_AUTO_CREATE
+        )
     }
 
     private fun stopNavService() {

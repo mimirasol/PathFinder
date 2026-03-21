@@ -310,11 +310,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
             val fusedClient = LocationServices.getFusedLocationProviderClient(this)
             val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10_000L)
-                .setMinUpdateIntervalMillis(5_000L).build()
+                .setMinUpdateIntervalMillis(5_000L)
+                .setMinUpdateDistanceMeters(5f)
+                .build()
 
             fusedClient.requestLocationUpdates(locationRequest, object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
-                    val loc    = result.lastLocation ?: return
+                    val loc = result.lastLocation ?: return
+                    // Ignore inaccurate fixes — cell tower / WiFi positions can be 100m+ off
+                    if (loc.hasAccuracy() && loc.accuracy > 50f) return
                     val latLng = LatLng(loc.latitude, loc.longitude)
                     currentLocation = latLng
                     if (!hasCenteredMap) {
