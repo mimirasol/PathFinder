@@ -285,42 +285,72 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
-                val location = result.lastLocation ?: return
-                currentLocation = LatLng(location.latitude, location.longitude)
-                currentLocation?.let { loc ->
-                    val bearing = if (location.hasBearing()) location.bearing else lastKnownBearing
-                    if (location.hasBearing()) lastKnownBearing = location.bearing
+                // Use lastLocation, but fall back to the most recent in locations list
+                // Some devices return null for lastLocation but still have locations
+                val location = result.lastLocation
+                    ?: result.locations.lastOrNull()
+                    ?: return
 
-                    // Always follow user with tilted camera
-                    val camPosition = CameraPosition.Builder()
-                        .target(loc)
-                        .zoom(19f)
-                        .tilt(60f)
-                        .bearing(bearing)
-                        .build()
-                    googleMap.animateCamera(CameraUpdateFactory.newCameraPosition(camPosition))
+                val loc = LatLng(location.latitude, location.longitude)
+                currentLocation = loc
 
-                    if (navArrowMarker == null) {
-                        navArrowMarker = googleMap.addMarker(
-                            MarkerOptions()
-                                .position(loc)
-                                .icon(vectorToBitmapDescriptor(R.drawable.nav_arrow))
-                                .rotation(bearing)
-                                .anchor(0.5f, 0.5f)
-                                .flat(true)
-                                .zIndex(1f)
-                        )
-                    } else {
-                        navArrowMarker!!.position = loc
-                        navArrowMarker!!.rotation = bearing
-                    }
+                val bearing = if (location.hasBearing()) location.bearing else lastKnownBearing
+                if (location.hasBearing()) lastKnownBearing = location.bearing
 
-                    if (!routeDrawn && destination != null) {
-                        routeDrawn = true  // set true to prevent multiple simultaneous fetches
-                        fetchRoute(loc, destination!!)
-                    }
-                    if (stepList.isNotEmpty()) checkStepProgress()
+                // Always follow user with tilted camera
+                val camPosition = CameraPosition.Builder()
+                    .target(loc)
+                    .zoom(19f)
+                    .tilt(60f)
+                    .bearing(bearing)
+                    .build()
+                googleMap.animateCamera(CameraUpdateFactory.newCameraPosition(camPosition))
+
+                // Arrow marker — create once, update position every tick
+                // Never remove it — if marker becomes null unexpectedly, recreate it
+                if (navArrowMarker == null || navArrowMarker?.isVisible == false) {
+                    navArrowMarker?.remove()
+                    navArrowMarker = googleMap.addMarker(
+                        MarkerOptions()
+                            .position(loc)
+                            .icon(vectorToBitmapDescriptor(R.drawable.nav_arrow))
+                            .rotation(bearing)
+                            .anchor(0.5f, 0.5f)
+                            .flat(true)
+                            .zIndex(1f)
+                    )
+                } else {
+                    navArrowMarker!!.position = loc
+                    navArrowMarker!!.rotation = bearing
                 }
+
+                // Redraw polyline if it disappeared
+                if (routeDrawn && routePolyline == null && destination != null
+                    && stepList.isNotEmpty()) {
+                    // Route was drawn before but polyline is gone — redraw it
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        val route = graphHopper.getRoute(
+                            loc.latitude, loc.longitude,
+                            destination!!.latitude, destination!!.longitude
+                        )
+                        withContext(Dispatchers.Main) {
+                            route?.let {
+                                routePolyline = googleMap.addPolyline(
+                                    PolylineOptions()
+                                        .addAll(it.points)
+                                        .width(14f)
+                                        .color(0xFF0073E6.toInt())
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (!routeDrawn && destination != null) {
+                    routeDrawn = true
+                    fetchRoute(loc, destination!!)
+                }
+                if (stepList.isNotEmpty()) checkStepProgress()
             }
         }
     }

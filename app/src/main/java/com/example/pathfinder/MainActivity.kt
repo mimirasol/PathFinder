@@ -281,9 +281,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             .addOnSuccessListener { response ->
                 val suggestions =
                     response.autocompletePredictions.map { it.getFullText(null).toString() }
-                txtDestination.setAdapter(
-                    ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, suggestions)
-                )
+                val adapter = ArrayAdapter(this, R.layout.item_autocomplete, suggestions)
+                txtDestination.setAdapter(adapter)
                 txtDestination.showDropDown()
             }
             .addOnFailureListener { it.printStackTrace() }
