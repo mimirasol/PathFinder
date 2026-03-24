@@ -38,7 +38,8 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Your accessible navigation companion"
+            android:text="A walk-first navigation app. \nGuiding every step you take"
+            android:textAlignment="center"
             android:fontFamily="@font/poppins"
             android:textSize="13sp"
             android:textColor="#8A94A6"

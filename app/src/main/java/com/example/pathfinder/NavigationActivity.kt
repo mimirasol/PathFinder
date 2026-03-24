@@ -260,6 +260,13 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         val lat = intent.getDoubleExtra("dest_lat", 0.0)
         val lng = intent.getDoubleExtra("dest_lng", 0.0)
         if (lat != 0.0 && lng != 0.0) destination = LatLng(lat, lng)
+
+        // Use the location passed from MainActivity so we don't wait for a GPS fix
+        val originLat = intent.getDoubleExtra("origin_lat", 0.0)
+        val originLng = intent.getDoubleExtra("origin_lng", 0.0)
+        if (originLat != 0.0 && originLng != 0.0) {
+            currentLocation = LatLng(originLat, originLng)
+        }
     }
 
     override fun onMapReady(map: GoogleMap) {
@@ -278,6 +285,17 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
         ) {
             googleMap.isMyLocationEnabled = false
             googleMap.uiSettings.isMyLocationButtonEnabled = false
+        }
+
+        // If we already have a location from MainActivity, fetch route immediately
+        // without waiting for the first GPS update
+        currentLocation?.let { loc ->
+            destination?.let { dest ->
+                if (!routeDrawn) {
+                    routeDrawn = true
+                    fetchRoute(loc, dest)
+                }
+            }
         }
     }
 
@@ -404,8 +422,14 @@ class NavigationActivity : AppCompatActivity(), OnMapReadyCallback {
                         .tilt(60f)
                         .bearing(lastKnownBearing)
                         .build()
-                    // moveCamera is instant — no animation delay
                     googleMap.moveCamera(CameraUpdateFactory.newCameraPosition(camPosition))
+
+                    // Force map to re-render everything — fixes devices where
+                    // polyline and marker exist but aren't visible until camera moves
+                    googleMap.stopAnimation()
+                    googleMap.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(camPosition)
+                    )
                 }
 
                 enterStep(0)

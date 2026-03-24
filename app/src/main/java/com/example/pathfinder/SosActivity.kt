@@ -108,12 +108,12 @@ class SosActivity : AppCompatActivity() {
         txtCountdown.setTextColor(0xFFFF4444.toInt())  // bright red on dark
 
         // Subtitle
-        txtSubtitle.text = "Double-tap the button to cancel"
+        txtSubtitle.text = "Tap exit to cancel"
         txtSubtitle.setTextColor(0xFFFF9999.toInt())
 
         // Button label update
         txtSosLabel.text = "SOS"
-        txtSosSub.text   = "Double-tap to cancel"
+        txtSosSub.text   = "Tap exit to cancel"
         txtSosSub.setTextColor(0xFFFFAAAA.toInt())
 
         countDownTimer = object : CountDownTimer(10_000L, 1000L) {
