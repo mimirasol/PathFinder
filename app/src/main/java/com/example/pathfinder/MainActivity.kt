@@ -1,3 +1,4 @@
+
 package com.example.pathfinder
 
 import android.Manifest
@@ -30,11 +31,6 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.*
 import com.google.android.gms.maps.*
 import com.google.android.gms.maps.model.*
-import com.google.android.libraries.places.api.Places
-import com.google.android.libraries.places.api.model.Place
-import com.google.android.libraries.places.api.net.FetchPlaceRequest
-import com.google.android.libraries.places.api.net.FindAutocompletePredictionsRequest
-import com.google.android.libraries.places.api.net.PlacesClient
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.firebase.auth.FirebaseAuth
@@ -49,12 +45,23 @@ import org.json.JSONObject
 import java.net.URL
 import java.util.*
 
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import org.json.JSONArray
+import java.net.HttpURLConnection
+import java.net.URLEncoder
+
+private data class OSMPlace(
+    val name: String,
+    val latitude: Double,
+    val longitude: Double
+)
+
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var mapView: MapView
     private lateinit var googleMap: GoogleMap
     private lateinit var tts: TextToSpeech
-    private lateinit var placesClient: PlacesClient
     private lateinit var txtDestination: MaterialAutoCompleteTextView
     private lateinit var graphHopperService: GraphHopperService
 
@@ -64,6 +71,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var destinationLatLng: LatLng? = null
     private var currentLocation: LatLng? = null
     private var hasCenteredMap = false
+    private var autocompleteJob: Job? = null
+    private var autocompleteResults = emptyList<OSMPlace>()
+    private var isSelectingDestination = false
+    private var isFindingLandmarks = false
 
     private val db by lazy {
         FirebaseDatabase.getInstance(
@@ -71,9 +82,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         ).reference
     }
     private var circleCode: String? = null
-    private val companionData    = mutableMapOf<String, CompanionUser>()
+    private val companionData = mutableMapOf<String, CompanionUser>()
     private val companionMarkers = mutableMapOf<String, Marker>()
-    private val memberListeners  = mutableMapOf<String, ValueEventListener>()
+    private val memberListeners = mutableMapOf<String, ValueEventListener>()
     private var membersListener: ValueEventListener? = null
     private lateinit var btnCompanion: Button
 
@@ -101,11 +112,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync(this)
 
-        if (!Places.isInitialized()) {
-            Places.initialize(applicationContext, getString(R.string.api_key))
-        }
-        placesClient = Places.createClient(this)
-
         txtDestination = findViewById(R.id.txtDestination)
         setupDestinationAutocomplete()
 
@@ -116,8 +122,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnClearSearch.setOnClickListener {
             txtDestination.text?.clear()
             destinationLatLng = null
-            destinationMarker?.remove(); destinationMarker = null
-            currentPolyline?.remove();   currentPolyline = null
+            destinationMarker?.remove()
+            destinationMarker = null
+            currentPolyline?.remove()
+            currentPolyline = null
         }
 
         tts = TextToSpeech(this) { status ->
@@ -129,16 +137,18 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val bottomSheet = findViewById<LinearLayout>(R.id.bottomSheet)
         BottomSheetBehavior.from(bottomSheet).apply {
-            state           = BottomSheetBehavior.STATE_COLLAPSED
-            isDraggable     = true
+            state = BottomSheetBehavior.STATE_COLLAPSED
+            isDraggable = true
             isFitToContents = true
-            isHideable      = false
+            isHideable = false
         }
 
         ViewCompat.setOnApplyWindowInsetsListener(bottomSheet) { view, insets ->
             val navBar = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
             view.setPadding(
-                view.paddingLeft, view.paddingTop, view.paddingRight,
+                view.paddingLeft,
+                view.paddingTop,
+                view.paddingRight,
                 navBar.bottom + resources.getDimensionPixelSize(R.dimen.bottom_sheet_padding)
             )
             insets
@@ -147,81 +157,123 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         btnCompanion = findViewById(R.id.btnCompanion)
 
         findViewById<Button>(R.id.btnWhereAmI).setOnClickListener {
-            val current = currentLocation ?: return@setOnClickListener
-            googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(current, 17f))
+            val current = currentLocation ?: run {
+                Toast.makeText(
+                    this,
+                    "Waiting for your location...",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@setOnClickListener
+            }
+
+            if (isFindingLandmarks) return@setOnClickListener
+            isFindingLandmarks = true
+
+            googleMap.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(current, 17f)
+            )
+
             youMarker?.remove()
-            youMarker = googleMap.addMarker(MarkerOptions().position(current).title("You"))
+            youMarker = googleMap.addMarker(
+                MarkerOptions().position(current).title("You")
+            )
 
-            lifecycleScope.launch(Dispatchers.IO) {
-                var streetName = "your current location"
+            // Show the bottom sheet immediately.
+            val locationSheet = showLandmarksBottomSheetProgressive(this)
+
+            // Initial information while requests are running.
+            locationSheet.updateStreetName("Your current location")
+            locationSheet.updateLandmarks(
+                listOf("Searching nearby landmarks...")
+            )
+
+            lifecycleScope.launch {
                 try {
-                    val geoUrl =
-                        "https://maps.googleapis.com/maps/api/geocode/json?" +
-                                "latlng=${current.latitude},${current.longitude}" +
-                                "&key=${getString(R.string.api_key)}"
-                    val geoObj  = JSONObject(URL(geoUrl).readText())
-                    val results = geoObj.getJSONArray("results")
-                    if (results.length() > 0) {
-                        val components =
-                            results.getJSONObject(0).getJSONArray("address_components")
-                        outer@ for (i in 0 until components.length()) {
-                            val comp  = components.getJSONObject(i)
-                            val types = comp.getJSONArray("types")
-                            for (j in 0 until types.length()) {
-                                if (types.getString(j) == "route") {
-                                    streetName = comp.getString("long_name")
-                                    break@outer
-                                }
-                            }
-                        }
+                    // Fetch the street name.
+                    val streetName = withContext(Dispatchers.IO) {
+                        fetchStreetName(current)
                     }
-                } catch (e: Exception) { e.printStackTrace() }
 
-                try {
-                    val placesUrl =
-                        "https://maps.googleapis.com/maps/api/place/nearbysearch/json?" +
-                                "location=${current.latitude},${current.longitude}" +
-                                "&radius=50&type=point_of_interest" +
-                                "&key=${getString(R.string.api_key)}"
-                    val jsonObj       = JSONObject(URL(placesUrl).readText())
-                    val results       = jsonObj.getJSONArray("results")
+                    // Update the bottom sheet as soon as the street name is available.
+                    locationSheet.updateStreetName(streetName)
+
+                    // Fetch nearby landmarks with one retry for temporary server errors.
+                    val landmarks = try {
+                        fetchNearbyLandmarksWithRetry(current)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        emptyList()
+                    }
+
                     val landmarkNames = ArrayList<String>()
 
-                    for (i in 0 until minOf(results.length(), 5)) {
-                        val place   = results.getJSONObject(i)
-                        val name    = place.getString("name")
-                        val loc     = place.getJSONObject("geometry").getJSONObject("location")
-                        val lat     = loc.getDouble("lat")
-                        val lng     = loc.getDouble("lng")
-                        val distArr = FloatArray(1)
-                        Location.distanceBetween(
-                            current.latitude, current.longitude, lat, lng, distArr
+                    landmarks.forEach { place ->
+                        val position = LatLng(
+                            place.latitude,
+                            place.longitude
                         )
-                        withContext(Dispatchers.Main) {
-                            googleMap.addMarker(
-                                MarkerOptions()
-                                    .position(LatLng(lat, lng))
-                                    .title(name)
-                                    .icon(BitmapDescriptorFactory.defaultMarker(
-                                        BitmapDescriptorFactory.HUE_AZURE))
-                            )
-                        }
-                        landmarkNames.add("${distArr[0].toInt()} m — $name")
+
+                        val distance = FloatArray(1)
+
+                        Location.distanceBetween(
+                            current.latitude,
+                            current.longitude,
+                            place.latitude,
+                            place.longitude,
+                            distance
+                        )
+
+                        googleMap.addMarker(
+                            MarkerOptions()
+                                .position(position)
+                                .title(place.name)
+                                .icon(
+                                    BitmapDescriptorFactory.defaultMarker(
+                                        BitmapDescriptorFactory.HUE_AZURE
+                                    )
+                                )
+                        )
+
+                        landmarkNames.add(
+                            "${distance[0].toInt()} m — ${place.name}"
+                        )
                     }
 
-                    withContext(Dispatchers.Main) {
-                        if (landmarkNames.isNotEmpty())
-                            showLandmarksBottomSheet(this@MainActivity, streetName, landmarkNames, tts)
-                        else
-                            Toast.makeText(this@MainActivity,
-                                "No landmarks found nearby", Toast.LENGTH_SHORT).show()
+                    // Update the bottom sheet when landmarks finish loading.
+                    if (landmarkNames.isNotEmpty()) {
+                        locationSheet.updateLandmarks(landmarkNames)
+
+                        // Preserve the original voice announcement.
+                        if (::tts.isInitialized) {
+                            val speechText = landmarkNames.joinToString(
+                                ", ",
+                                prefix = "You are on $streetName. Nearby landmarks are "
+                            )
+
+                            tts.speak(
+                                speechText,
+                                TextToSpeech.QUEUE_FLUSH,
+                                null,
+                                "LANDMARKS"
+                            )
+                        }
+                    } else {
+                        locationSheet.updateLandmarks(
+                            listOf(
+                                "Nearby landmarks are temporarily unavailable. Please try again later."
+                            )
+                        )
                     }
+
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity,
-                            "Error fetching landmarks", Toast.LENGTH_SHORT).show()
-                    }
+
+                    locationSheet.updateLandmarks(
+                        listOf("Unable to find landmarks: ${e.message}")
+                    )
+
+                } finally {
+                    isFindingLandmarks = false
                 }
             }
         }
@@ -246,8 +298,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         findViewById<Button>(R.id.btnStart).setOnClickListener {
             val dest = destinationLatLng ?: run {
-                Toast.makeText(this, "Please select a destination first.",
-                    Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this,
+                    "Please select a destination first.",
+                    Toast.LENGTH_SHORT
+                ).show()
                 return@setOnClickListener
             }
             startActivity(Intent(this, NavigationActivity::class.java).apply {
@@ -276,7 +331,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         super.onDestroy()
     }
 
-    override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
+    override fun onLowMemory() {
+        super.onLowMemory()
+        mapView.onLowMemory()
+    }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
@@ -286,15 +344,189 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     // ═════════ Map ════════════════════════════════════════════════════════
 
     override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == LOCATION_PERMISSION_REQUEST &&
             grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
         ) {
-            if (::googleMap.isInitialized && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) googleMap.isMyLocationEnabled = true
+            if (::googleMap.isInitialized &&
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                googleMap.isMyLocationEnabled = true
+            }
             startService(Intent(this, LocationSharingService::class.java))
+        }
+    }
+
+    private fun fetchStreetName(current: LatLng): String {
+        val url = URL(
+            "https://nominatim.openstreetmap.org/reverse" +
+                    "?lat=${current.latitude}" +
+                    "&lon=${current.longitude}" +
+                    "&format=jsonv2"
+        )
+
+        val connection = url.openConnection() as HttpURLConnection
+
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.setRequestProperty(
+                "User-Agent",
+                "PathfinderAndroid/1.0"
+            )
+
+            val responseCode = connection.responseCode
+
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                val errorBody = connection.errorStream?.bufferedReader()?.use {
+                    it.readText()
+                }
+
+                throw Exception("HTTP $responseCode: ${errorBody ?: "No details"}")
+            }
+
+            val response = connection.inputStream.bufferedReader().use {
+                it.readText()
+            }
+
+            val json = JSONObject(response)
+            val address = json.optJSONObject("address")
+
+            return address?.optString("road")?.takeIf { it.isNotBlank() }
+                ?: address?.optString("pedestrian")?.takeIf { it.isNotBlank() }
+                ?: address?.optString("footway")?.takeIf { it.isNotBlank() }
+                ?: json.optString("display_name", "your current location")
+
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun fetchNearbyLandmarks(current: LatLng): List<OSMPlace> {
+        val query = """
+            [out:json][timeout:25];
+            nwr(around:50,${current.latitude},${current.longitude})["name"];
+            out center;
+        """.trimIndent()
+
+        val connection = URL(
+            "https://overpass-api.de/api/interpreter"
+        ).openConnection() as HttpURLConnection
+
+        try {
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.connectTimeout = 15000
+            connection.readTimeout = 40000
+
+            connection.setRequestProperty(
+                "User-Agent",
+                "PathfinderAndroid/1.0"
+            )
+            connection.setRequestProperty(
+                "Content-Type",
+                "application/x-www-form-urlencoded; charset=UTF-8"
+            )
+
+            val requestBody = "data=" + URLEncoder.encode(query, "UTF-8")
+
+            connection.outputStream.use {
+                it.write(requestBody.toByteArray(Charsets.UTF_8))
+            }
+
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw Exception("Landmark request failed: ${connection.responseCode}")
+            }
+
+            val response = connection.inputStream.bufferedReader().use {
+                it.readText()
+            }
+
+            val elements = JSONObject(response).getJSONArray("elements")
+            val places = mutableListOf<OSMPlace>()
+
+            for (i in 0 until elements.length()) {
+                val item = elements.getJSONObject(i)
+                val name = item.optJSONObject("tags")
+                    ?.optString("name")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: continue
+
+                val latitude: Double
+                val longitude: Double
+
+                if (item.has("lat") && item.has("lon")) {
+                    latitude = item.getDouble("lat")
+                    longitude = item.getDouble("lon")
+                } else {
+                    val center = item.optJSONObject("center") ?: continue
+                    latitude = center.getDouble("lat")
+                    longitude = center.getDouble("lon")
+                }
+
+                places.add(
+                    OSMPlace(
+                        name = name,
+                        latitude = latitude,
+                        longitude = longitude
+                    )
+                )
+            }
+
+            return places
+                .distinctBy { it.name }
+                .sortedBy { place ->
+                    val distance = FloatArray(1)
+                    Location.distanceBetween(
+                        current.latitude,
+                        current.longitude,
+                        place.latitude,
+                        place.longitude,
+                        distance
+                    )
+                    distance[0]
+                }
+                .take(5)
+
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    // Retry the landmark request once if Overpass returns a temporary server error.
+    private suspend fun fetchNearbyLandmarksWithRetry(
+        current: LatLng
+    ): List<OSMPlace> {
+        return try {
+            withContext(Dispatchers.IO) {
+                fetchNearbyLandmarks(current)
+            }
+        } catch (e: Exception) {
+            val isTemporaryServerError =
+                e.message?.contains("502") == true ||
+                        e.message?.contains("503") == true ||
+                        e.message?.contains("504") == true
+
+            if (!isTemporaryServerError) {
+                throw e
+            }
+
+            // Wait 2 seconds before retrying.
+            delay(2000)
+
+            // Retry the original request once.
+            withContext(Dispatchers.IO) {
+                fetchNearbyLandmarks(current)
+            }
         }
     }
 
@@ -302,39 +534,54 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         googleMap = map
 
         if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             googleMap.isMyLocationEnabled = true
             startService(Intent(this, LocationSharingService::class.java))
 
             val fusedClient = LocationServices.getFusedLocationProviderClient(this)
-            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10_000L)
+            val locationRequest = LocationRequest.Builder(
+                Priority.PRIORITY_HIGH_ACCURACY,
+                10_000L
+            )
                 .setMinUpdateIntervalMillis(5_000L)
                 .setMinUpdateDistanceMeters(5f)
                 .build()
 
-            fusedClient.requestLocationUpdates(locationRequest, object : LocationCallback() {
-                override fun onLocationResult(result: LocationResult) {
-                    val loc = result.lastLocation ?: return
-                    // Ignore inaccurate fixes — cell tower / WiFi positions can be 100m+ off
-                    if (loc.hasAccuracy() && loc.accuracy > 50f) return
-                    val latLng = LatLng(loc.latitude, loc.longitude)
-                    currentLocation = latLng
-                    if (!hasCenteredMap) {
-                        googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(latLng, 17f))
-                        hasCenteredMap = true
-                        youMarker?.remove()
-                        youMarker = googleMap.addMarker(
-                            MarkerOptions().position(latLng).title("You")
-                        )
+            fusedClient.requestLocationUpdates(
+                locationRequest,
+                object : LocationCallback() {
+                    override fun onLocationResult(result: LocationResult) {
+                        val loc = result.lastLocation ?: return
+
+                        // Ignore inaccurate fixes — cell tower / WiFi positions can be 100m+ off.
+                        if (loc.hasAccuracy() && loc.accuracy > 50f) return
+
+                        val latLng = LatLng(loc.latitude, loc.longitude)
+                        currentLocation = latLng
+
+                        if (!hasCenteredMap) {
+                            googleMap.moveCamera(
+                                CameraUpdateFactory.newLatLngZoom(latLng, 17f)
+                            )
+                            hasCenteredMap = true
+                            youMarker?.remove()
+                            youMarker = googleMap.addMarker(
+                                MarkerOptions().position(latLng).title("You")
+                            )
+                        }
                     }
-                }
-            }, Looper.getMainLooper())
+                },
+                Looper.getMainLooper()
+            )
         } else {
-            ActivityCompat.requestPermissions(this,
+            ActivityCompat.requestPermissions(
+                this,
                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                LOCATION_PERMISSION_REQUEST)
+                LOCATION_PERMISSION_REQUEST
+            )
         }
     }
 
@@ -343,17 +590,26 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun drawRoute(origin: LatLng, destination: LatLng) {
         lifecycleScope.launch(Dispatchers.IO) {
             val route = graphHopperService.getRoute(
-                origin.latitude, origin.longitude,
-                destination.latitude, destination.longitude
+                origin.latitude,
+                origin.longitude,
+                destination.latitude,
+                destination.longitude
             )
             withContext(Dispatchers.Main) {
                 if (route != null && route.points.isNotEmpty()) {
                     currentPolyline?.remove()
                     currentPolyline = googleMap.addPolyline(
-                        PolylineOptions().addAll(route.points).color(Color.BLUE).width(10f)
+                        PolylineOptions()
+                            .addAll(route.points)
+                            .color(Color.BLUE)
+                            .width(10f)
                     )
                 } else {
-                    Toast.makeText(this@MainActivity, "Route not found", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Route not found",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
@@ -373,13 +629,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     }
                     updateCompanionButton()
                 }
+
                 override fun onCancelled(error: DatabaseError) {}
             })
     }
 
     private fun createCircle() {
-        val uid  = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val code = generateCircleCode()
+
         db.child("circles").child(code).updateChildren(
             mapOf("createdBy" to uid, "members/$uid" to true)
         ).addOnSuccessListener {
@@ -399,16 +657,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun leaveCircle() {
-        val uid  = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val code = circleCode ?: return
+
         detachAllListeners()
         db.child("circles").child(code).child("members").child(uid).removeValue()
         db.child("users").child(uid).child("circleCode").setValue("")
+
         circleCode = null
         companionData.clear()
         companionMarkers.values.forEach { it.remove() }
         companionMarkers.clear()
         updateCompanionButton()
+
         Toast.makeText(this, "Left circle", Toast.LENGTH_SHORT).show()
     }
 
@@ -418,41 +679,42 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             btnCompanion.text = "Companion"
             return
         }
+
         val onlineCount = companionData.values.count { isOnline(it) }
-        val total       = companionData.size
+        val total = companionData.size
+
         btnCompanion.text = if (total == 0) "Companion (0)"
         else "Companion ($onlineCount/$total)"
     }
 
     private fun isOnline(user: CompanionUser): Boolean {
-        // lastUpdated == 0 means they just joined and haven't sent location yet
-        // treat as online (pending) so they don't show as offline immediately
+        // lastUpdated == 0 means they just joined and haven't sent location yet.
+        // Treat as online (pending) so they don't show as offline immediately.
         if (user.location.lastUpdated == 0L) return true
         return (System.currentTimeMillis() - user.location.lastUpdated) < ONLINE_THRESHOLD_MS
     }
 
-
     private fun showCircleDialog(code: String) {
-        val uid       = FirebaseAuth.getInstance().currentUser?.uid
+        val uid = FirebaseAuth.getInstance().currentUser?.uid
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(64, 32, 64, 16)
         }
 
         container.addView(TextView(this).apply {
-            text          = code
-            textSize      = 38f
-            gravity       = Gravity.CENTER
+            text = code
+            textSize = 38f
+            gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#0073E6"))
-            typeface      = android.graphics.Typeface.MONOSPACE
+            typeface = android.graphics.Typeface.MONOSPACE
             letterSpacing = 0.3f
             setPadding(0, 0, 0, 24)
         })
 
         container.addView(TextView(this).apply {
-            text      = "Circle members"
-            textSize  = 13f
-            gravity   = Gravity.CENTER
+            text = "Circle members"
+            textSize = 13f
+            gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#888888"))
             setPadding(0, 0, 0, 16)
         })
@@ -460,28 +722,34 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         fun addRow(name: String, dotColor: String, statusTxt: String) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity     = Gravity.CENTER_VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, 8, 0, 8)
             }
+
             row.addView(TextView(this).apply {
-                text      = "●"
-                textSize  = 14f
+                text = "●"
+                textSize = 14f
                 setTextColor(Color.parseColor(dotColor))
                 setPadding(0, 0, 16, 0)
             })
+
             row.addView(TextView(this).apply {
-                text     = name
+                text = name
                 textSize = 16f
                 setTextColor(Color.BLACK)
                 layoutParams = LinearLayout.LayoutParams(
-                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
                 )
             })
+
             row.addView(TextView(this).apply {
-                text      = statusTxt
-                textSize  = 13f
+                text = statusTxt
+                textSize = 13f
                 setTextColor(Color.parseColor(dotColor))
             })
+
             container.addView(row)
         }
 
@@ -490,42 +758,46 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 .addListenerForSingleValueEvent(object : ValueEventListener {
                     override fun onDataChange(snap: DataSnapshot) {
                         val self = snap.getValue(CompanionUser::class.java)
+
                         if (self != null) {
-                            // Navigator is always online — they just opened this dialog
+                            // Navigator is always online — they just opened this dialog.
                             addRow(
-                                name      = self.name,
-                                dotColor  = "#0073E6",
+                                name = self.name,
+                                dotColor = "#0073E6",
                                 statusTxt = "You · Online"
                             )
                         }
+
                         if (companionData.isEmpty()) {
                             container.addView(TextView(this@MainActivity).apply {
-                                text      = "No companions have joined yet"
-                                textSize  = 13f
-                                gravity   = Gravity.CENTER
+                                text = "No companions have joined yet"
+                                textSize = 13f
+                                gravity = Gravity.CENTER
                                 setTextColor(Color.parseColor("#AAAAAA"))
                                 setPadding(0, 8, 0, 0)
                             })
                         } else {
                             companionData.values.forEach { user ->
-                                val online  = isOnline(user)
+                                val online = isOnline(user)
                                 val pending = user.location.lastUpdated == 0L
+
                                 addRow(
-                                    name      = user.name.ifBlank { "Companion" },
-                                    dotColor  = when {
-                                        pending -> "#F59E0B"   // amber — waiting for first location
-                                        online  -> "#4CAF50"   // green — active
-                                        else    -> "#AAAAAA"   // grey — offline
+                                    name = user.name.ifBlank { "Companion" },
+                                    dotColor = when {
+                                        pending -> "#F59E0B"
+                                        online -> "#4CAF50"
+                                        else -> "#AAAAAA"
                                     },
                                     statusTxt = when {
                                         pending -> "Joining…"
-                                        online  -> "Online"
-                                        else    -> "Offline"
+                                        online -> "Online"
+                                        else -> "Offline"
                                     }
                                 )
                             }
                         }
                     }
+
                     override fun onCancelled(error: DatabaseError) {}
                 })
         }
@@ -549,9 +821,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun listenToCircleMembers(code: String) {
         val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snap: DataSnapshot) {
                 val activeUids = snap.children.mapNotNull { it.key }.toSet()
+
                 (memberListeners.keys - activeUids).forEach { uid ->
                     memberListeners.remove(uid)?.let { l ->
                         db.child("users").child(uid).removeEventListener(l)
@@ -559,15 +833,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     companionMarkers.remove(uid)?.remove()
                     companionData.remove(uid)
                 }
+
                 activeUids.forEach { uid ->
                     if (uid != currentUid && uid !in memberListeners) {
                         listenToMemberLocation(uid)
                     }
                 }
+
                 updateCompanionButton()
             }
+
             override fun onCancelled(error: DatabaseError) {}
         }
+
         membersListener = listener
         db.child("circles").child(code).child("members").addValueEventListener(listener)
     }
@@ -577,44 +855,57 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             override fun onDataChange(snap: DataSnapshot) {
                 val user = snap.getValue(CompanionUser::class.java) ?: return
                 companionData[uid] = user
+
                 if (::googleMap.isInitialized && user.location.lat != 0.0) {
-                    val pos     = LatLng(user.location.lat, user.location.lng)
-                    val title   = "👥 ${user.name}"
+                    val pos = LatLng(user.location.lat, user.location.lng)
+                    val title = "👥 ${user.name}"
                     val snippet = "🔋 ${user.location.battery}%"
                     val existing = companionMarkers[uid]
+
                     if (existing != null) {
                         existing.position = pos
-                        existing.title    = title
-                        existing.snippet  = snippet
+                        existing.title = title
+                        existing.snippet = snippet
                     } else {
                         val marker = googleMap.addMarker(
                             MarkerOptions()
-                                .position(pos).title(title).snippet(snippet)
-                                .icon(BitmapDescriptorFactory.defaultMarker(
-                                    BitmapDescriptorFactory.HUE_VIOLET))
+                                .position(pos)
+                                .title(title)
+                                .snippet(snippet)
+                                .icon(
+                                    BitmapDescriptorFactory.defaultMarker(
+                                        BitmapDescriptorFactory.HUE_VIOLET
+                                    )
+                                )
                         )
                         if (marker != null) companionMarkers[uid] = marker
                     }
                 }
+
                 updateCompanionButton()
             }
+
             override fun onCancelled(error: DatabaseError) {}
         }
+
         memberListeners[uid] = listener
         db.child("users").child(uid).addValueEventListener(listener)
     }
 
     private fun detachAllListeners() {
         val code = circleCode
+
         if (code != null) {
             membersListener?.let {
                 db.child("circles").child(code).child("members").removeEventListener(it)
                 membersListener = null
             }
         }
+
         memberListeners.forEach { (uid, l) ->
             db.child("users").child(uid).removeEventListener(l)
         }
+
         memberListeners.clear()
     }
 
@@ -627,62 +918,168 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun setupDestinationAutocomplete() {
         txtDestination.doOnTextChanged { text, _, _, _ ->
-            if (text.toString().length >= 3) fetchAutocomplete(text.toString())
+            if (isSelectingDestination) return@doOnTextChanged
+
+            // Invalidate the previous destination when the user edits the search.
+            destinationLatLng = null
+            destinationMarker?.remove()
+            destinationMarker = null
+            currentPolyline?.remove()
+            currentPolyline = null
+
+            val query = text.toString().trim()
+
+            if (query.length >= 3) {
+                fetchAutocomplete(query)
+            } else {
+                autocompleteJob?.cancel()
+                autocompleteResults = emptyList()
+
+                txtDestination.setAdapter(
+                    ArrayAdapter(this, R.layout.item_autocomplete, emptyList<String>())
+                )
+                txtDestination.dismissDropDown()
+            }
         }
-        txtDestination.setOnItemClickListener { parent, _, position, _ ->
-            selectAutocomplete(parent.getItemAtPosition(position) as String)
+
+        txtDestination.setOnItemClickListener { _, _, position, _ ->
+            autocompleteResults.getOrNull(position)?.let {
+                selectAutocomplete(it)
+            }
         }
+
         txtDestination.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
-                val first = txtDestination.adapter?.getItem(0) as? String
-                first?.let { selectAutocomplete(it) }
+                autocompleteResults.firstOrNull()?.let {
+                    selectAutocomplete(it)
+                }
             }
             true
         }
     }
 
     private fun fetchAutocomplete(query: String) {
-        val request = FindAutocompletePredictionsRequest.builder().setQuery(query).build()
-        placesClient.findAutocompletePredictions(request)
-            .addOnSuccessListener { response ->
-                val suggestions =
-                    response.autocompletePredictions.map { it.getFullText(null).toString() }
-                txtDestination.setAdapter(
-                    ArrayAdapter(this, R.layout.item_autocomplete, suggestions)
-                )
-                txtDestination.showDropDown()
+        autocompleteJob?.cancel()
+
+        autocompleteJob = lifecycleScope.launch {
+            // Debounce requests so we don't send one for every keystroke.
+            delay(1000)
+
+            try {
+                val results = withContext(Dispatchers.IO) {
+                    val encodedQuery = URLEncoder.encode(query, "UTF-8")
+                    val url = URL(
+                        "https://nominatim.openstreetmap.org/search" +
+                                "?q=$encodedQuery&format=jsonv2&limit=5"
+                    )
+
+                    val connection = url.openConnection() as HttpURLConnection
+
+                    try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 10000
+                        connection.readTimeout = 10000
+                        connection.setRequestProperty(
+                            "User-Agent",
+                            "PathfinderAndroid/1.0"
+                        )
+
+                        if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                            throw Exception("Search request failed: ${connection.responseCode}")
+                        }
+
+                        val response = connection.inputStream.bufferedReader().use {
+                            it.readText()
+                        }
+
+                        val jsonArray = JSONArray(response)
+
+                        (0 until jsonArray.length()).map { index ->
+                            val item = jsonArray.getJSONObject(index)
+
+                            OSMPlace(
+                                name = item.getString("display_name"),
+                                latitude = item.getDouble("lat"),
+                                longitude = item.getDouble("lon")
+                            )
+                        }
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+
+                // Don't show results for an outdated query.
+                if (txtDestination.text.toString().trim() == query) {
+                    autocompleteResults = results
+
+                    txtDestination.setAdapter(
+                        ArrayAdapter(
+                            this@MainActivity,
+                            R.layout.item_autocomplete,
+                            results.map { it.name }
+                        )
+                    )
+
+                    if (results.isNotEmpty()) {
+                        txtDestination.showDropDown()
+                    }
+                }
+
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            .addOnFailureListener { it.printStackTrace() }
+        }
     }
 
-    private fun selectAutocomplete(selectedText: String) {
-        placesClient.findAutocompletePredictions(
-            FindAutocompletePredictionsRequest.builder().setQuery(selectedText).build()
-        ).addOnSuccessListener { response ->
-            val prediction =
-                response.autocompletePredictions.firstOrNull() ?: return@addOnSuccessListener
-            placesClient.fetchPlace(
-                FetchPlaceRequest.builder(
-                    prediction.placeId,
-                    listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.LOCATION)
-                ).build()
-            ).addOnSuccessListener { placeResponse ->
-                val place  = placeResponse.place
-                val name   = place.displayName ?: "Destination"
-                val latLng = place.location ?: return@addOnSuccessListener
-                destinationLatLng = latLng
-                currentPolyline?.remove(); currentPolyline = null
-                destinationMarker?.remove()
-                destinationMarker = googleMap.addMarker(
-                    MarkerOptions().position(latLng).title(name)
-                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
+    private fun selectAutocomplete(place: OSMPlace) {
+        val name = place.name
+        val latLng = LatLng(place.latitude, place.longitude)
+
+        isSelectingDestination = true
+        txtDestination.setText(name, false)
+        isSelectingDestination = false
+
+        destinationLatLng = latLng
+
+        currentPolyline?.remove()
+        currentPolyline = null
+
+        destinationMarker?.remove()
+        destinationMarker = googleMap.addMarker(
+            MarkerOptions()
+                .position(latLng)
+                .title(name)
+                .icon(
+                    BitmapDescriptorFactory.defaultMarker(
+                        BitmapDescriptorFactory.HUE_RED
+                    )
                 )
-                currentLocation?.let { drawRoute(it, latLng) }
-                val b = LatLngBounds.builder().include(latLng)
-                currentLocation?.let { b.include(it) }
-                googleMap.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), 150))
-                tts.speak("Navigating to $name", TextToSpeech.QUEUE_FLUSH, null, "DESTINATION")
-            }.addOnFailureListener { it.printStackTrace() }
-        }.addOnFailureListener { it.printStackTrace() }
+        )
+
+        currentLocation?.let {
+            drawRoute(it, latLng)
+
+            val bounds = LatLngBounds.builder()
+                .include(it)
+                .include(latLng)
+                .build()
+
+            googleMap.animateCamera(
+                CameraUpdateFactory.newLatLngBounds(bounds, 150)
+            )
+        } ?: run {
+            googleMap.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(latLng, 16f)
+            )
+        }
+
+        if (::tts.isInitialized) {
+            tts.speak(
+                "Navigating to $name",
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "DESTINATION"
+            )
+        }
     }
 }
